@@ -111,3 +111,120 @@ is re-judged unless its content or the rubric changes.
 | `src/db.ts` + `src/schema.sql` | SQLite persistence |
 | `src/types.ts` / `src/util.ts` | shared contract + helpers |
 | `pipeline.ts` | orchestrator (resumable) |
+
+---
+
+# Cowork Workflow Miner (Tiếng Việt)
+
+Gán nhãn workflow tốt/xấu từ chính các phiên Claude Code thực tế của bạn và tạo ra
+báo cáo xếp hạng các ứng viên skill/script/SOP. Đây là bản prototype chạy cục bộ của
+cổng kiểm soát trí tuệ khai thác (Cổng Go/Kill 1) — dừng lại **trước khi** soạn skill.
+
+Xem `implementation-plan.md` để biết thiết kế đầy đủ và `DATA_FORMAT.md` để biết
+định dạng transcript đã được xác minh.
+
+## Pipeline
+
+```
+discover → classify (vai trò lượt) → segment (episode) → signals + subagents
+   → render → judge (claude -p) → SQLite ─┬→ calibrate (cổng tin cậy)
+                                          └→ mine (cluster + tốt/xấu) → report.md + candidates.json
+```
+
+## Cài đặt
+
+```bash
+bun install            # phụ thuộc duy nhất: @types/bun (dùng bun:sqlite)
+```
+
+Yêu cầu có `claude` CLI trong PATH (dùng ở chế độ headless làm trình chấm điểm:
+`claude -p --output-format json`). Mặc định, các lệnh gọi LLM đi qua **profile ccs `my-api`** —
+pipeline sẽ tiêm env của profile đó (`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` từ
+`ccs env my-api`) vào subprocess `claude`. Dùng `--runner claude` để chuyển sang đăng nhập
+`claude` thông thường, hoặc `--ccs-profile <name>` để chọn profile ccs khác. (`ccs` chỉ bắt buộc
+với runner mặc định `--runner ccs`; `--runner claude` không cần phụ thuộc này.)
+
+## Chạy
+
+```bash
+# 1. Kiểm tra nhanh classifier trên một phiên (công cụ audit)
+bun run src/classify.ts <sessionId|path>
+
+# 2. Liệt kê các phiên thực tế đã phát hiện
+bun run src/discover.ts
+
+# 3. Smoke test (chỉ kiểm tra cấu trúc, không gọi LLM)
+bun run pipeline.ts --project auto-skills --limit 3 --no-judge
+
+# 3b. Xác thực cấu trúc với chi phí $0 — đếm số liệu so với baseline + bất biến cứng (PASS/FAIL)
+#     Chạy sau mỗi lần --no-judge; thoát với mã khác 0 nếu một bất biến bị vi phạm.
+bun run check                       # hoặc: bun run check --db other.db
+
+# 3c. Xem render với chi phí $0 — thấy CHÍNH XÁC những gì trình chấm điểm sẽ đọc.
+#     Render không bao giờ được lưu, nên lệnh này chạy lại cấu trúc và in ra.
+bun run dump-render --list                  # bảng metadata: chars/cap, đã rút gọn?, subagents?
+bun run dump-render --sample 3              # 3 episode tiêu biểu (dài nhất, đã rút gọn, có subagents)
+bun run dump-render <sessionId>#<idx>       # một episode cụ thể, toàn bộ nội dung
+bun run dump-render --session <id|prefix>   # mọi episode trong một phiên
+
+# 4. Smoke test với trình chấm điểm thực, có giới hạn
+#    --project khớp với một chuỗi con của basename cwd được ghi lại của phiên
+#    (ví dụ: dự án usth được ghi là "tennis_tracking_system").
+bun run pipeline.ts --project tennis --limit 5 --max-episodes 10 --yes
+
+# 5. Chạy đầy đủ (có thể tiếp tục; judge dùng cache-key — chạy lại sẽ bỏ qua episode đã chấm)
+bun run pipeline.ts --mine          # --mine cũng chạy mine + report ở cuối
+
+# 6. Cổng tin cậy: kiểm tra thủ công phân tầng + tự đối chiếu
+bun run src/calibrate.ts            # tương tác; --non-interactive để chỉ lấy mẫu
+bun run src/calibrate.ts --non-interactive
+
+# 7. (Tái) tạo báo cáo bất cứ lúc nào
+bun run src/mine.ts
+bun run src/report.ts               # ghi ra out/report.md + out/candidates.json
+```
+
+### Các cờ của pipeline.ts
+`--project <substr>` · `--limit N` (số phiên) · `--since <ISO>` · `--resume` ·
+`--classify-llm` (chạy LLM trên các ranh giới lượt mơ hồ) · `--max-episodes N`
+(giới hạn số lần gọi judge) · `--max-cost <USD>` (trần chi tiêu cứng) · `--yes` (bỏ qua
+xác nhận chi phí ước tính) · `--no-judge` · `--db <path>` · `--mine` ·
+`--runner ccs|claude` (định tuyến LLM, mặc định `ccs`) · `--ccs-profile <name>` (mặc định `my-api`)
+
+An toàn chi phí: một lần chạy judge mới với chi phí ước tính trên ~$5 sẽ hỏi xác nhận
+(thất bại an toàn khi không có TTY — truyền `--yes` để tự động hóa). `--max-cost` giới hạn
+tổng chi tiêu tích lũy, và 5 lần judge thất bại liên tiếp sẽ kích hoạt cầu dao ngắt mạch để
+một CLI lỗi không thể đốt hết ngân sách. Các cờ dạng số sẽ từ chối giá trị không phải số
+thay vì âm thầm bỏ giới hạn.
+
+## Lưu ý chi phí / thời gian
+
+Trình chấm điểm chạy `claude -p` **tuần tự**, ~một lần gọi cho mỗi episode (corpus ≈ 329
+episode). Mỗi lần gọi là một request thực có tính phí. Dùng `--max-episodes` /
+`--project` / `--limit` để giới hạn một lần chạy; cache-key đa thành phần
+(nội dung + prompt + schema + model + cli) khiến lần chạy đầy đủ có thể tiếp tục — không có gì
+bị chấm lại trừ khi nội dung hoặc rubric của nó thay đổi.
+
+## Kết quả đầu ra
+
+- `analysis.db` (gitignored) — sessions, turns, episodes, features, evidence, labels, calibration, clusters.
+- `out/report.md` — đối chiếu workflow tốt-và-xấu theo từng cluster + các episode tiêu biểu.
+- `out/candidates.json` — các ứng viên đã xếp hạng (bàn giao dạng máy đọc được cho giai đoạn soạn skill).
+
+## Bản đồ module
+
+| File | Giai đoạn |
+|---|---|
+| `src/discover.ts` | liệt kê các phiên thực (loại trừ fork, chế độ agent, chính dự án của analyzer) |
+| `src/classify.ts` + `prompts/classify.md` | trình phân loại vai trò lượt (P0) |
+| `src/segment.ts` | gom các lượt thành episode (P0) |
+| `src/signals.ts` | tín hiệu bằng chứng + đặc trưng số |
+| `src/subagents.ts` | tóm tắt subagent gọn → episode cha |
+| `src/render.ts` | góc nhìn episode gọn cho trình chấm điểm (≤12k ký tự) |
+| `src/judge.ts` + `prompts/judge.md` | trình chấm điểm LLM neo theo bias + cache-key (P0) |
+| `src/calibrate.ts` | hiệu chỉnh phân tầng + tự nhất quán (cổng tin cậy P0) |
+| `src/mine.ts` | cluster + đối chiếu tốt/xấu + xếp hạng thành phần |
+| `src/report.ts` | báo cáo dựa trên episode tiêu biểu + candidates.json |
+| `src/db.ts` + `src/schema.sql` | lưu trữ SQLite |
+| `src/types.ts` / `src/util.ts` | hợp đồng chung + tiện ích |
+| `pipeline.ts` | trình điều phối (có thể tiếp tục) |
