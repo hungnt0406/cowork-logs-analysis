@@ -1,0 +1,7 @@
+node_modules/
+analysis.db
+analysis.db-shm
+analysis.db-wal
+out/
+*.log
+.DS_Store

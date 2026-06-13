@@ -1,0 +1,20 @@
+{
+  "name": "cowork-logs-analysis",
+  "version": "0.1.0",
+  "description": "Cowork Workflow Miner — label good/bad workflows from real Claude Code sessions into ranked skill candidates",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "discover": "bun run src/discover.ts",
+    "classify": "bun run src/classify.ts",
+    "pipeline": "bun run pipeline.ts",
+    "check": "bun run src/check.ts",
+    "dump-render": "bun run src/dump-render.ts",
+    "calibrate": "bun run src/calibrate.ts",
+    "mine": "bun run src/mine.ts",
+    "report": "bun run src/report.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
