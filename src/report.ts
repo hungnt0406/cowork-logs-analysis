@@ -9,8 +9,11 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { hostname } from "os";
 import type { RankedCandidate } from "./types.ts";
 import { mine, clusterContrast } from "./mine.ts";
+import { runBusinessSidecar } from "./sidecar.ts";
+import { sanitizeText } from "./privacy.ts";
 
 const DEFAULT_OUT_DIR = join(import.meta.dir, "..", "out");
 
@@ -129,7 +132,9 @@ function pickExemplars(
 function fmtExemplar(r: ExemplarRow | null): string {
   if (!r) return "_none available_";
   const fric = (r.n_corrections ?? 0) + (r.n_interruptions ?? 0);
-  return `\`${r.episode_id}\` : ${oneLine(r.first_prompt, 120)} _(outcome: ${r.outcome ?? "unjudged"}, friction: ${fric})_`;
+  // Sanitize the prompt even in the local report (defence in depth — POLICY §3).
+  const prompt = sanitizeText(oneLine(r.first_prompt, 120)).text;
+  return `\`${r.episode_id}\` : ${prompt} _(outcome: ${r.outcome ?? "unjudged"}, friction: ${fric})_`;
 }
 
 function fmtPatternList(pairs: [string, number][], limit = 3): string {
@@ -151,12 +156,21 @@ function fmtFrictionList(pairs: [string, number][], limit = 3): string {
 // ── main ──────────────────────────────────────────────────────────────────────
 export async function report(
   db: Database,
-  opts?: { outDir?: string }
+  opts?: { outDir?: string; businessContext?: string; useLlmSidecar?: boolean; machineId?: string }
 ): Promise<void> {
   const outDir = opts?.outDir ?? DEFAULT_OUT_DIR;
   mkdirSync(outDir, { recursive: true });
 
   const { clusters, candidates } = await mine(db);
+
+  // ── Business sidecar (joins LATE — never influenced ranking, judge, or mine) ──
+  const businessContext = (opts?.businessContext ?? "").trim();
+  if (businessContext) {
+    const notes = await runBusinessSidecar(candidates, businessContext, {
+      useLlm: opts?.useLlmSidecar ?? true,
+    });
+    for (const c of candidates) c.business_note = notes.get(c.cluster_id) ?? "";
+  }
 
   // index candidate by cluster_id; map cluster members.
   const candById = new Map<string, RankedCandidate>();
@@ -277,6 +291,10 @@ export async function report(
     lines.push("");
     lines.push(`- Good: ${fmtExemplar(good)}`);
     lines.push(`- Bad: ${fmtExemplar(bad)}`);
+    if (c.business_note) {
+      lines.push("");
+      lines.push(`**Business note (sidecar, join-late):** ${c.business_note}`);
+    }
     lines.push("");
   };
 
@@ -314,20 +332,39 @@ export async function report(
   writeFileSync(mdPath, lines.join("\n"), "utf8");
 
   // ── candidates.json ─────────────────────────────────────────────────────────
+  const machineId = opts?.machineId ?? process.env.CWBH_MACHINE_ID ?? hostname() ?? "unknown-host";
   const jsonPath = join(outDir, "candidates.json");
   const payload = {
+    machine_id: machineId,
     candidates,
     contrasts,
     generated_at: new Date().toISOString(),
   };
   writeFileSync(jsonPath, JSON.stringify(payload, null, 2), "utf8");
+
+  // Machine-tagged export for cross-machine convergence (converge.ts reads these).
+  const stateDir = join(outDir, "state");
+  mkdirSync(stateDir, { recursive: true });
+  const safeMid = machineId.replace(/[^A-Za-z0-9_\-]/g, "_");
+  writeFileSync(
+    join(stateDir, `candidates_${safeMid}.json`),
+    JSON.stringify({ machine_id: machineId, candidates }, null, 2),
+    "utf8"
+  );
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 if (import.meta.main) {
   const { openDb } = await import("./db.ts");
+  const args = process.argv.slice(2);
+  let businessContext = "";
+  let useLlmSidecar = true;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--business") businessContext = args[++i] ?? "";
+    else if (args[i] === "--no-llm-sidecar") useLlmSidecar = false;
+  }
   const db = openDb();
-  await report(db);
+  await report(db, { businessContext, useLlmSidecar });
   const outDir = DEFAULT_OUT_DIR;
   console.log(`Wrote:`);
   console.log(`  ${join(outDir, "report.md")}`);

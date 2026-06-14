@@ -14,6 +14,7 @@ import { Database } from "bun:sqlite";
 import { openDb } from "./db.ts";
 import { upsertCalibration } from "./db.ts";
 import { judgeEpisode } from "./judge.ts";
+import { sanitizeRendered } from "./privacy.ts";
 import type { CalibrationRow, Outcome } from "./types.ts";
 
 const OUTCOMES: readonly Outcome[] = [
@@ -203,7 +204,8 @@ async function runSelfConsistency(
   let matched = 0;
   let checked = 0;
   for (const ep of subset) {
-    const rendered = reconstructCompact(db, ep);
+    // PRIVACY GATE — sanitize the reconstruction before it reaches the LLM judge.
+    const rendered = sanitizeRendered(reconstructCompact(db, ep)).text;
     try {
       const { label } = await judgeEpisode(rendered, ep.episodeId);
       checked++;

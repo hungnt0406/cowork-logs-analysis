@@ -17,7 +17,10 @@ import { classifyTurns } from "./src/classify.ts";
 import { segmentEpisodes } from "./src/segment.ts";
 import { attachSubagents } from "./src/subagents.ts";
 import { computeSignalsAndFeatures } from "./src/signals.ts";
-import { renderEpisode } from "./src/render.ts";
+import { renderEpisodeSafe } from "./src/render.ts";
+import { filterExcluded } from "./src/privacy.ts";
+import { mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
 import {
   judgeEpisode,
   getJudgePromptHash,
@@ -61,6 +64,7 @@ interface Flags {
   mine: boolean;
   runner?: RunnerName;
   ccsProfile?: string;
+  business?: string;
 }
 
 // Parse a numeric flag, failing CLOSED on a missing/non-numeric value. A cost-bearing
@@ -105,6 +109,7 @@ function parseFlags(argv: string[]): Flags {
         break;
       }
       case "--ccs-profile": f.ccsProfile = next(); break;
+      case "--business": f.business = next(); break;
       default:
         if (a.startsWith("--")) console.warn(`[pipeline] unknown flag ignored: ${a}`);
     }
@@ -138,12 +143,21 @@ async function main() {
   const cliVersion = flags.noJudge ? "" : await getCliVersion();
 
   log(`discovering sessions${flags.project ? ` (project~="${flags.project}")` : ""}…`);
-  const sessions = await discoverSessions({
+  const discovered = await discoverSessions({
     project: flags.project,
     since: flags.since,
     limit: flags.limit,
   });
-  log(`found ${sessions.length} session(s).`);
+  // PRIVACY / worker-protection — drop opt-out sessions BEFORE reading content.
+  const { kept: sessions, excluded } = filterExcluded(discovered);
+  log(`found ${discovered.length} session(s); ${sessions.length} kept, ${excluded.length} opted-out.`);
+  for (const e of excluded) {
+    log(`  · opt-out: ${e.project}/${e.sessionId.slice(0, 8)} — ${e.reason}`);
+  }
+  // Redaction audit accumulators (transparency — POLICY §4).
+  let redactionHits = 0;
+  let credentialEpisodes = 0;
+  let strongPiiHits = 0;
 
   // ── Cost gate (H2) ────────────────────────────────────────────────────────
   // Confirm before an expensive serial judge run. Upper-bound estimate (ignores
@@ -240,8 +254,11 @@ async function main() {
       episodeBudget--;
       spentUsd += COST_PER_JUDGE_USD;
       try {
-        const rendered = renderEpisode(ep);
-        const { label, meta } = await judgeEpisode(rendered, ep.episodeId, { model });
+        const r = renderEpisodeSafe(ep);
+        redactionHits += r.nRedactionHits;
+        strongPiiHits += r.nStrongPii;
+        if (r.hadCredential) credentialEpisodes++;
+        const { label, meta } = await judgeEpisode(r.text, ep.episodeId, { model });
         upsertLabel(db, label, meta);
         judged++;
         consecErrors = 0;
@@ -268,10 +285,40 @@ async function main() {
       `judged=${judged} cached/skipped=${skipped} judgeErrors=${judgeErrors} ` +
       `est_spend=$${spentUsd.toFixed(2)}`
   );
+
+  // Privacy/worker-protection audit (POLICY §4 transparency).
+  try {
+    const stateDir = join(import.meta.dir, "out", "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "audit.json"),
+      JSON.stringify(
+        {
+          generated_at: new Date().toISOString(),
+          sessions_discovered: discovered.length,
+          sessions_kept: sessions.length,
+          sessions_opted_out: excluded,
+          episodes_judged: judged,
+          redaction_hits: redactionHits,
+          episodes_with_credentials_redacted: credentialEpisodes,
+          strong_pii_masked: strongPiiHits,
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    log(
+      `privacy audit → out/state/audit.json (redaction_hits=${redactionHits}, ` +
+        `credential_eps=${credentialEpisodes}, strong_pii=${strongPiiHits})`
+    );
+  } catch {
+    /* never block on audit write */
+  }
   if (flags.mine && !flags.noJudge) {
     log("running mine + report…");
     await mine(db);
-    await report(db);
+    await report(db, { businessContext: flags.business ?? "" });
     log("wrote out/report.md and out/candidates.json");
   }
   db.close();
