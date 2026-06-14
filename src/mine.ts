@@ -25,7 +25,16 @@ import { runnerEnv } from "./runner.ts";
 // (e.g. for deterministic tests) without code changes. Falls back gracefully.
 const USE_LLM_CLUSTERING =
   (process.env.MINE_LLM_CLUSTERING ?? "1") !== "0";
-const LLM_TIMEOUT_MS = Number(process.env.MINE_LLM_TIMEOUT_MS ?? 30000);
+// Default 180s, not 30s: through the ccs proxy a single grouping call's
+// time-to-first-token alone was measured at ~112s (the model then returns in
+// ~130s total). A 30s budget SIGTERM-killed the call before any output, silently
+// collapsing every label into its own identity cluster. Override via env.
+const LLM_TIMEOUT_MS = Number(process.env.MINE_LLM_TIMEOUT_MS ?? 180000);
+// Pin a model for the grouping call. The task is light synonym-merging, but its
+// output defines every cluster boundary in the report, so favor Sonnet's headroom
+// over Haiku at one cheap call per mine. Override via MINE_LLM_MODEL (e.g.
+// "claude-haiku-4-5-20251001" for a faster/cheaper pass).
+const LLM_CLUSTER_MODEL = process.env.MINE_LLM_MODEL ?? "claude-sonnet-4-6";
 
 // Small-N honesty thresholds (the corpus is ~150–250 tasks; clusters are thin).
 const MIN_PATTERN_N = 3; // min SUCCESS episodes before a pattern counts as "stable"
@@ -147,13 +156,16 @@ mapping each input string to its cluster label: {"<input>": "<cluster label>", .
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const proc = Bun.spawn(["claude", "-p", "--output-format", "json"], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      signal: ctrl.signal,
-      env: { ...process.env, ...(await runnerEnv()) },
-    });
+    const proc = Bun.spawn(
+      ["claude", "-p", "--model", LLM_CLUSTER_MODEL, "--output-format", "json"],
+      {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        signal: ctrl.signal,
+        env: { ...process.env, ...(await runnerEnv()) },
+      }
+    );
     proc.stdin.write(prompt);
     await proc.stdin.end();
     const out = await new Response(proc.stdout).text();
@@ -420,6 +432,18 @@ export async function mine(
   let groupMap: Map<string, string> | null = null;
   if (USE_LLM_CLUSTERING && distinctNorm.size > 1) {
     groupMap = await llmGroupTaskTypes([...distinctNorm]);
+    if (groupMap == null) {
+      // Loud, non-silent fallback: a null return means the grouping call failed
+      // wholesale (timeout/parse), NOT that the corpus had no synonyms. Without
+      // this warning the fragmented identity clusters masquerade as a real result.
+      console.error(
+        `[mine] WARNING: LLM clustering pass returned null (timeout/parse failure) — ` +
+          `falling back to IDENTITY clustering over ${distinctNorm.size} labels. ` +
+          `Synonyms will NOT merge; clusters fragment (every git phrasing becomes its ` +
+          `own singleton). Re-run with a larger MINE_LLM_TIMEOUT_MS (current ` +
+          `${LLM_TIMEOUT_MS}ms), or set MINE_LLM_CLUSTERING=0 to choose identity on purpose.`
+      );
+    }
   }
   // Fallback: identity map (each normalized label is its own cluster).
   const clusterLabelOf = (norm: string): string =>
