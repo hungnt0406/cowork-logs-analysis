@@ -67,7 +67,7 @@
 
   <h1>Cowork Workflow Miner — Kiến trúc hợp nhất</h1>
   <p class="sub">Hợp nhất 2 dự án: <b>lõi</b> = <code>cowork-logs-analysis</code> (segmentation → LLM judge → calibration → mine),
-  <b>vỏ</b> = <code>cowork-behavior-harness</code> (privacy gate · business sidecar · convergence · skill-draft). TechStack: TypeScript / Bun / SQLite.</p>
+  <b>vỏ</b> = <code>cowork-behavior-harness</code> (privacy gate · business sidecar · convergence). TechStack: TypeScript / Bun / SQLite.</p>
 
   <div class="legend">
     <span class="chip core"><span class="dot"></span>Lõi gốc (logs-analysis)</span>
@@ -142,9 +142,6 @@
       <div class="stage shell"><div class="t">converge <span class="tag shell">VỎ · meta gate</span></div>
         <div class="d">Gom candidates nhiều máy → workflow xuất hiện ≥2 máy = <b>cross-validated</b>.</div>
         <div class="f">src/converge.ts → out/convergence.md</div></div>
-      <div class="stage shell"><div class="t">skill-draft + E2E test <span class="tag shell">VỎ · gated</span></div>
-        <div class="d">Opt-in (<code>--yes</code>) → SKILL.md + run.ts + <code>bun test</code> + REVIEW.md vào review queue. Self-eval. KHÔNG publish.</div>
-        <div class="f">src/skilldraft.ts → out/skill_drafts/&lt;slug&gt;/</div></div>
     </div>
 
   </div>
@@ -167,9 +164,8 @@
     <tr><td><code>src/privacy.ts</code></td><td><b>Privacy gate: credential DROP / PII MASK + opt-out</b></td><td><span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>src/sidecar.ts</code></td><td><b>Business sidecar (join late)</b></td><td><span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>src/converge.ts</code></td><td><b>Hội tụ cross-machine</b></td><td><span class="pill shell">VỎ</span></td></tr>
-    <tr><td><code>src/skilldraft.ts</code></td><td><b>Draft SKILL.md + E2E test (gated)</b></td><td><span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>pipeline.ts</code></td><td>Orchestrator <b>+ opt-out filter + audit</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
-    <tr><td><code>src/merge.test.ts</code></td><td><b>Test cho vỏ (privacy/converge/draft)</b></td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/merge.test.ts</code></td><td><b>Test cho vỏ (privacy/converge)</b></td><td><span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>POLICY.md</code></td><td><b>Chính sách bảo vệ NLĐ &amp; dữ liệu</b></td><td><span class="pill shell">VỎ</span></td></tr>
   </table>
 
@@ -185,7 +181,6 @@
       <li><b>Bảo vệ NLĐ &amp; dữ liệu (API/Pass)</b> — privacy gate fail-closed + opt-out + POLICY + audit.</li>
       <li><b>Business = sidecar, join late</b> — judge/mine business-blind; note ghép sau.</li>
       <li><b>Hội tụ nhiều máy</b> — converge → cross-validated (open gate cho meta).</li>
-      <li><b>Full quy trình tạo skill + E2E test</b> — skilldraft gated + self-eval, review queue.</li>
     </ul></div>
   </div>
 
@@ -199,7 +194,6 @@
       <ul><li><code>report.md</code> · <code>candidates.json</code></li>
       <li><code>state/candidates_&lt;machine&gt;.json</code> → converge</li>
       <li><code>convergence.md</code> · <code>convergence.json</code></li>
-      <li><code>skill_drafts/&lt;slug&gt;/</code> (review queue)</li>
       <li><code>state/audit.json</code> (privacy audit)</li></ul></div>
   </div>
 
@@ -211,8 +205,7 @@
     <tr><td><code>bun run check</code></td><td>Kiểm tra bất biến cấu trúc (PASS/FAIL)</td></tr>
     <tr><td><code>bun run calibrate</code></td><td>Cổng tin cậy: spot-check + self-consistency</td></tr>
     <tr><td><code>bun run converge</code></td><td>Hội tụ candidates nhiều máy → cross-validated</td></tr>
-    <tr><td><code>bun run draft --yes</code></td><td>Draft SKILL.md + E2E test (review queue, gated)</td></tr>
-    <tr><td><code>bun test src</code></td><td>Test vỏ hợp nhất (privacy/converge/draft)</td></tr>
+    <tr><td><code>bun test src</code></td><td>Test vỏ hợp nhất (privacy/converge)</td></tr>
   </table>
 
   <p class="foot">Cowork Workflow Miner · lõi cowork-logs-analysis + vỏ cowork-behavior-harness · TypeScript/Bun/SQLite · sinh bởi quá trình hợp nhất.</p>

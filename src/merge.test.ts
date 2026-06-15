@@ -1,13 +1,9 @@
-// Tests for the merged shell (privacy gate, convergence, skill-draft gate).
+// Tests for the merged shell (privacy gate, convergence).
 // Run: bun test src/merge.test.ts
 import { test, expect } from "bun:test";
 import { sanitizeText, isExcludedSession, filterExcluded } from "./privacy.ts";
 import { converge } from "./converge.ts";
-import { isDraftable, slugify, draftSkill, selfEval, DraftGateError } from "./skilldraft.ts";
 import type { SessionInfo, RankedCandidate } from "./types.ts";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
 
 // ── privacy ────────────────────────────────────────────────────────────────────
 test("credentials are dropped, never leaked", () => {
@@ -92,25 +88,4 @@ test("cross-machine convergence marks shared workflow cross-validated", () => {
   expect(xval.length).toBe(1);
   expect(xval[0].n_machines).toBe(2);
   expect(xval[0].total_frequency).toBe(7);
-});
-
-// ── skill-draft gate ─────────────────────────────────────────────────────────────
-test("draft gate refuses without opt-in", () => {
-  expect(() => draftSkill(cand({}), mkdtempSync(join(tmpdir(), "sk-")), false)).toThrow(DraftGateError);
-});
-
-test("non-draftable intervention is refused", () => {
-  expect(isDraftable(cand({ recommended_intervention: "none" }))).toBe(false);
-  expect(() => draftSkill(cand({ recommended_intervention: "none" }), mkdtempSync(join(tmpdir(), "sk-")), true)).toThrow(
-    DraftGateError
-  );
-});
-
-test("draft produces a skill whose own tests pass (self-eval)", async () => {
-  const root = mkdtempSync(join(tmpdir(), "skilldraft-"));
-  const dir = draftSkill(cand({ label: "create ticket flow" }), root, true);
-  expect(slugify("create ticket flow")).toBe("create-ticket-flow");
-  const ev = await selfEval(dir);
-  expect(ev.passed).toBe(true);
-  expect(ev.nTests).toBeGreaterThanOrEqual(3);
 });

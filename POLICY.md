@@ -33,8 +33,6 @@ are enforced in code, not just documented.
 ## 5. No automated decisions about people
 - The system only **suggests** (candidates / interventions). It does not auto-create or
   publish skills, and never produces HR judgements.
-- Skill drafts (`src/skilldraft.ts`) are opt-in (`--yes`), go to a **review queue**
-  (`out/skill_drafts/`), and require human sign-off (REVIEW.md). Never published.
 
 ## 6. Business as a late sidecar — `src/sidecar.ts`
 - The judge and miner are **business-blind** to preserve independent evaluation.
