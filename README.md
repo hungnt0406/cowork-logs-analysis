@@ -30,55 +30,140 @@ the `claude` subprocess. Pass `--runner claude` to use the plain `claude` login 
 
 ## Run
 
+New here? Two things make this safe to poke at: the **`--no-judge` path costs $0**
+(no LLM calls at all), and the full run is **resumable + cache-keyed** (re-running
+never re-judges an episode unless its content or the rubric changed). So work up
+from the free checks to one small live run before you do the full thing.
+
+### Quick start — the recommended first run
+
 ```bash
-# 1. Eyeball the classifier on one session (audit tool)
-bun run src/classify.ts <sessionId|path>
+bun install                                              # one-time
 
-# 2. List discovered real sessions
-bun run src/discover.ts
+# 1. See which sessions the pipeline will pick up ($0, no LLM)
+bun run discover
 
-# 3. Smoke (structure only, no LLM calls)
-bun run pipeline.ts --project auto-skills --limit 3 --no-judge
+# 2. Build structure only — no judge calls, $0 — then validate it (PASS/FAIL)
+bun run pipeline.ts --project tennis --limit 3 --no-judge
+bun run check
 
-# 3b. Validate the structure for $0 — counts vs baseline + hard invariants (PASS/FAIL)
-#     Run after any --no-judge pass; exits non-zero if an invariant breaks.
-bun run check                       # or: bun run check --db other.db
+# 3. Eyeball EXACTLY what the judge will read ($0; the render is never stored)
+bun run dump-render --sample 3
 
-# 3c. Eyeball the render for $0 — see EXACTLY what the judge will read.
-#     The render is never persisted, so this re-runs structure and prints it.
-bun run dump-render --list                  # metadata table: chars/cap, elided?, subagents?
-bun run dump-render --sample 3              # 3 representative episodes (longest, elided, subagents)
-bun run dump-render <sessionId>#<idx>       # one specific episode, full body
-bun run dump-render --session <id|prefix>   # every episode in a session
-
-# 4. Smoke with the live judge, capped
-#    --project matches a substring of the session's recorded cwd basename
-#    (e.g. the usth project records as "tennis_tracking_system").
+# 4. First LIVE run, tightly capped so it costs cents not dollars
 bun run pipeline.ts --project tennis --limit 5 --max-episodes 10 --yes
 
-# 5. Full run (resumable; judge is cache-keyed — re-running skips judged episodes)
-bun run pipeline.ts --mine          # --mine also runs mine + report at the end
-
-# 6. Trust gate: stratified human spot-check + auto cross-check
-bun run src/calibrate.ts            # interactive; --non-interactive to just sample
-bun run src/calibrate.ts --non-interactive
-
-# 7. (Re)generate the report any time
-bun run src/mine.ts
-bun run src/report.ts               # writes out/report.md + out/candidates.json
+# 5. Full run + report (resumable; skips anything already judged)
+bun run pipeline.ts --mine
 ```
 
-### pipeline.ts flags
-`--project <substr>` · `--limit N` (sessions) · `--since <ISO>` · `--resume` ·
-`--classify-llm` (LLM pass on ambiguous turn boundaries) · `--max-episodes N`
-(cap judge calls) · `--max-cost <USD>` (hard spend ceiling) · `--yes` (skip the
-est-cost confirmation) · `--no-judge` · `--db <path>` · `--mine` ·
-`--runner ccs|claude` (LLM routing, default `ccs`) · `--ccs-profile <name>` (default `my-api`)
+Then read the two outputs: `out/report.md` (human) and `out/candidates.json` (machine handoff).
 
-Cost safety: a fresh judge run above ~$5 estimated prompts for confirmation (fails
-closed on non-TTY — pass `--yes` for automation). `--max-cost` caps cumulative spend,
-and 5 consecutive judge failures trip a circuit breaker so a broken CLI can't burn the
-whole budget. Numeric flags reject non-numeric values rather than silently unbounding.
+> `--project <substr>` matches a substring of the session's recorded cwd basename,
+> e.g. `tennis` matches the project recorded as `tennis_tracking_system`.
+
+### Command reference (every command + its flags)
+
+Each stage is runnable on its own. Flags are shown inline with what they do.
+
+#### `pipeline.ts` — the orchestrator (the command you'll use most)
+
+```bash
+bun run pipeline.ts [flags]
+```
+
+| Flag | What it does |
+|---|---|
+| `--project <substr>` | only sessions whose cwd basename contains `<substr>` |
+| `--limit N` | at most N sessions (0 ⇒ none; rejects non-numeric) |
+| `--since <ISO>` | only sessions modified on/after an ISO date, e.g. `2026-06-01` |
+| `--no-judge` | **structure phase only — no LLM, $0.** Pair with `bun run check` |
+| `--max-episodes N` | hard cap on judge calls this run (bound cost by count) |
+| `--max-cost <USD>` | stop judging once estimated spend would exceed this ceiling |
+| `--yes` / `-y` | skip the >\$5 confirmation prompt (required on non-TTY / automation) |
+| `--mine` | after judging, also run mine + report (writes `out/`) |
+| `--resume` | re-run safely; writes are idempotent and judged episodes are skipped |
+| `--classify-llm` | use the LLM to resolve ambiguous turn boundaries (default: heuristics only) |
+| `--db <path>` | use a non-default SQLite file (default `analysis.db`) |
+| `--runner ccs\|claude` | how `claude -p` is authed: `ccs` (default) injects a ccs profile's env; `claude` uses your plain login (no ccs needed) |
+| `--ccs-profile <name>` | which ccs profile to inject (default `my-api`; only used with `--runner ccs`) |
+
+```bash
+# common combinations
+bun run pipeline.ts --project tennis --limit 3 --no-judge      # $0 structure smoke
+bun run pipeline.ts --project tennis --max-episodes 10 --yes   # cheap live smoke
+bun run pipeline.ts --since 2026-06-01 --max-cost 5 --mine     # bounded full run + report
+bun run pipeline.ts --runner claude --mine                     # use plain `claude` login, no ccs
+```
+
+#### `discover` — list the sessions the pipeline would analyze ($0)
+
+```bash
+bun run discover [--project <substr>] [--since <ISO>] [--limit N]
+```
+
+#### `classify` — audit the turn-role classifier on ONE session
+
+```bash
+bun run classify <sessionId|path>      # required positional; heuristics only, $0
+bun run classify <sessionId|path> --classify-llm   # also LLM-resolve ambiguous turns
+```
+
+#### `check` — validate DB structure after a `--no-judge` pass ($0)
+
+```bash
+bun run check                  # PASS/FAIL invariants; exits non-zero on failure
+bun run check --db other.db    # check a non-default DB
+```
+
+#### `dump-render` — print exactly what the judge reads ($0; never persisted)
+
+```bash
+bun run dump-render --list                    # metadata table only: chars/cap, elided?, subagents?
+bun run dump-render --sample [N]              # N representative episodes (default 3): longest, an elided one, subagents
+bun run dump-render --random N                # N random episodes
+bun run dump-render <sessionId>#<idx>         # one specific episode, full body
+bun run dump-render --session <id|prefix>     # every episode in one session
+# corpus-mode filters (combine with --list / --sample / --random):
+bun run dump-render --sample 3 --project tennis --limit 5
+```
+
+#### `mine` — re-cluster + rank from the labels already in the DB
+
+```bash
+bun run mine
+```
+
+No flags (reads the default `analysis.db`). Tunable via env vars:
+`MINE_LLM_CLUSTERING=0` (skip the LLM grouping pass → fall back to string-normalization
+clustering), `MINE_LLM_TIMEOUT_MS` (default `180000`), `MINE_LLM_MODEL` (default `claude-sonnet-4-6`).
+
+#### `report` — (re)write `out/report.md` + `out/candidates.json` from the DB
+
+```bash
+bun run report
+```
+
+No flags (reads the default `analysis.db`).
+
+#### `calibrate` — trust gate: human spot-check + auto cross-check
+
+Manual, **not** part of the auto pipeline.
+
+```bash
+bun run calibrate                       # interactive spot-check
+bun run calibrate --non-interactive     # sample + auto cross-check only, no prompts
+bun run calibrate --sample N            # how many episodes to spot-check
+bun run calibrate --self-consistency K  # re-judge K episodes to measure judge stability
+```
+
+### Cost safety (applies to any run that judges)
+
+A fresh run estimated above ~\$5 prompts for confirmation and **fails closed on
+non-TTY** — pass `--yes` for automation. `--max-cost` caps cumulative spend,
+`--max-episodes` caps the call count, and 5 consecutive judge failures trip a
+circuit breaker so a broken CLI can't burn the whole budget. Numeric flags reject
+non-numeric values rather than silently unbounding.
 
 ## Cost / time note
 
@@ -146,56 +231,140 @@ với runner mặc định `--runner ccs`; `--runner claude` không cần phụ 
 
 ## Chạy
 
+Người mới? Hai điều khiến project này an toàn để thử nghiệm: đường chạy **`--no-judge`
+tốn $0** (hoàn toàn không gọi LLM), và lần chạy đầy đủ **có thể tiếp tục + dùng cache-key**
+(chạy lại không bao giờ chấm lại một episode trừ khi nội dung hoặc rubric của nó thay đổi).
+Vì vậy hãy đi từ các bước miễn phí lên một lần chạy thực nhỏ trước khi chạy đầy đủ.
+
+### Bắt đầu nhanh — lần chạy đầu tiên được khuyến nghị
+
 ```bash
-# 1. Kiểm tra nhanh classifier trên một phiên (công cụ audit)
-bun run src/classify.ts <sessionId|path>
+bun install                                              # chạy một lần
 
-# 2. Liệt kê các phiên thực tế đã phát hiện
-bun run src/discover.ts
+# 1. Xem những phiên nào pipeline sẽ lấy ($0, không gọi LLM)
+bun run discover
 
-# 3. Smoke test (chỉ kiểm tra cấu trúc, không gọi LLM)
-bun run pipeline.ts --project auto-skills --limit 3 --no-judge
+# 2. Chỉ dựng cấu trúc — không gọi judge, $0 — rồi xác thực (PASS/FAIL)
+bun run pipeline.ts --project tennis --limit 3 --no-judge
+bun run check
 
-# 3b. Xác thực cấu trúc với chi phí $0 — đếm số liệu so với baseline + bất biến cứng (PASS/FAIL)
-#     Chạy sau mỗi lần --no-judge; thoát với mã khác 0 nếu một bất biến bị vi phạm.
-bun run check                       # hoặc: bun run check --db other.db
+# 3. Xem CHÍNH XÁC những gì judge sẽ đọc ($0; render không bao giờ được lưu)
+bun run dump-render --sample 3
 
-# 3c. Xem render với chi phí $0 — thấy CHÍNH XÁC những gì trình chấm điểm sẽ đọc.
-#     Render không bao giờ được lưu, nên lệnh này chạy lại cấu trúc và in ra.
-bun run dump-render --list                  # bảng metadata: chars/cap, đã rút gọn?, subagents?
-bun run dump-render --sample 3              # 3 episode tiêu biểu (dài nhất, đã rút gọn, có subagents)
-bun run dump-render <sessionId>#<idx>       # một episode cụ thể, toàn bộ nội dung
-bun run dump-render --session <id|prefix>   # mọi episode trong một phiên
-
-# 4. Smoke test với trình chấm điểm thực, có giới hạn
-#    --project khớp với một chuỗi con của basename cwd được ghi lại của phiên
-#    (ví dụ: dự án usth được ghi là "tennis_tracking_system").
+# 4. Lần chạy THỰC đầu tiên, giới hạn chặt để chỉ tốn vài xu thay vì vài đô
 bun run pipeline.ts --project tennis --limit 5 --max-episodes 10 --yes
 
-# 5. Chạy đầy đủ (có thể tiếp tục; judge dùng cache-key — chạy lại sẽ bỏ qua episode đã chấm)
-bun run pipeline.ts --mine          # --mine cũng chạy mine + report ở cuối
-
-# 6. Cổng tin cậy: kiểm tra thủ công phân tầng + tự đối chiếu
-bun run src/calibrate.ts            # tương tác; --non-interactive để chỉ lấy mẫu
-bun run src/calibrate.ts --non-interactive
-
-# 7. (Tái) tạo báo cáo bất cứ lúc nào
-bun run src/mine.ts
-bun run src/report.ts               # ghi ra out/report.md + out/candidates.json
+# 5. Chạy đầy đủ + báo cáo (có thể tiếp tục; bỏ qua mọi episode đã chấm)
+bun run pipeline.ts --mine
 ```
 
-### Các cờ của pipeline.ts
-`--project <substr>` · `--limit N` (số phiên) · `--since <ISO>` · `--resume` ·
-`--classify-llm` (chạy LLM trên các ranh giới lượt mơ hồ) · `--max-episodes N`
-(giới hạn số lần gọi judge) · `--max-cost <USD>` (trần chi tiêu cứng) · `--yes` (bỏ qua
-xác nhận chi phí ước tính) · `--no-judge` · `--db <path>` · `--mine` ·
-`--runner ccs|claude` (định tuyến LLM, mặc định `ccs`) · `--ccs-profile <name>` (mặc định `my-api`)
+Sau đó đọc hai kết quả: `out/report.md` (cho người) và `out/candidates.json` (bàn giao cho máy).
 
-An toàn chi phí: một lần chạy judge mới với chi phí ước tính trên ~$5 sẽ hỏi xác nhận
-(thất bại an toàn khi không có TTY — truyền `--yes` để tự động hóa). `--max-cost` giới hạn
-tổng chi tiêu tích lũy, và 5 lần judge thất bại liên tiếp sẽ kích hoạt cầu dao ngắt mạch để
-một CLI lỗi không thể đốt hết ngân sách. Các cờ dạng số sẽ từ chối giá trị không phải số
-thay vì âm thầm bỏ giới hạn.
+> `--project <substr>` khớp với một chuỗi con của basename cwd được ghi lại của phiên,
+> ví dụ `tennis` khớp với dự án được ghi là `tennis_tracking_system`.
+
+### Tham chiếu lệnh (mỗi lệnh + các cờ của nó)
+
+Mỗi giai đoạn có thể chạy độc lập. Các cờ được chú thích trực tiếp kèm chức năng.
+
+#### `pipeline.ts` — trình điều phối (lệnh bạn dùng nhiều nhất)
+
+```bash
+bun run pipeline.ts [các cờ]
+```
+
+| Cờ | Chức năng |
+|---|---|
+| `--project <substr>` | chỉ các phiên có basename cwd chứa `<substr>` |
+| `--limit N` | tối đa N phiên (0 ⇒ không phiên nào; từ chối giá trị không phải số) |
+| `--since <ISO>` | chỉ các phiên sửa đổi từ một ngày ISO trở đi, ví dụ `2026-06-01` |
+| `--no-judge` | **chỉ giai đoạn cấu trúc — không LLM, $0.** Dùng cùng `bun run check` |
+| `--max-episodes N` | trần cứng số lần gọi judge trong lần chạy này (giới hạn chi phí theo số lượng) |
+| `--max-cost <USD>` | dừng chấm khi chi phí ước tính vượt trần này |
+| `--yes` / `-y` | bỏ qua xác nhận khi >\$5 (bắt buộc khi không có TTY / tự động hóa) |
+| `--mine` | sau khi chấm, chạy luôn mine + report (ghi `out/`) |
+| `--resume` | chạy lại an toàn; mọi ghi đều idempotent và episode đã chấm sẽ bị bỏ qua |
+| `--classify-llm` | dùng LLM để xử lý ranh giới lượt mơ hồ (mặc định: chỉ heuristic) |
+| `--db <path>` | dùng file SQLite khác mặc định (mặc định `analysis.db`) |
+| `--runner ccs\|claude` | cách `claude -p` xác thực: `ccs` (mặc định) tiêm env của profile ccs; `claude` dùng đăng nhập thường (không cần ccs) |
+| `--ccs-profile <name>` | profile ccs cần tiêm (mặc định `my-api`; chỉ dùng với `--runner ccs`) |
+
+```bash
+# các tổ hợp thường dùng
+bun run pipeline.ts --project tennis --limit 3 --no-judge      # smoke cấu trúc $0
+bun run pipeline.ts --project tennis --max-episodes 10 --yes   # smoke thực, rẻ
+bun run pipeline.ts --since 2026-06-01 --max-cost 5 --mine     # chạy đầy đủ có giới hạn + report
+bun run pipeline.ts --runner claude --mine                     # dùng đăng nhập `claude` thường, không ccs
+```
+
+#### `discover` — liệt kê các phiên pipeline sẽ phân tích ($0)
+
+```bash
+bun run discover [--project <substr>] [--since <ISO>] [--limit N]
+```
+
+#### `classify` — kiểm tra trình phân loại vai trò lượt trên MỘT phiên
+
+```bash
+bun run classify <sessionId|path>      # positional bắt buộc; chỉ heuristic, $0
+bun run classify <sessionId|path> --classify-llm   # dùng thêm LLM cho lượt mơ hồ
+```
+
+#### `check` — xác thực cấu trúc DB sau một lần chạy `--no-judge` ($0)
+
+```bash
+bun run check                  # bất biến PASS/FAIL; thoát mã khác 0 khi lỗi
+bun run check --db other.db    # kiểm tra một DB khác mặc định
+```
+
+#### `dump-render` — in chính xác những gì judge đọc ($0; không bao giờ lưu)
+
+```bash
+bun run dump-render --list                    # chỉ bảng metadata: chars/cap, đã rút gọn?, subagents?
+bun run dump-render --sample [N]              # N episode tiêu biểu (mặc định 3): dài nhất, một cái bị rút gọn, có subagents
+bun run dump-render --random N                # N episode ngẫu nhiên
+bun run dump-render <sessionId>#<idx>         # một episode cụ thể, toàn bộ nội dung
+bun run dump-render --session <id|prefix>     # mọi episode trong một phiên
+# bộ lọc chế độ corpus (kết hợp với --list / --sample / --random):
+bun run dump-render --sample 3 --project tennis --limit 5
+```
+
+#### `mine` — gom cụm + xếp hạng lại từ các nhãn đã có trong DB
+
+```bash
+bun run mine
+```
+
+Không có cờ (đọc `analysis.db` mặc định). Tinh chỉnh qua biến môi trường:
+`MINE_LLM_CLUSTERING=0` (bỏ qua bước gom cụm bằng LLM → quay về gom cụm bằng chuẩn hóa
+chuỗi), `MINE_LLM_TIMEOUT_MS` (mặc định `180000`), `MINE_LLM_MODEL` (mặc định `claude-sonnet-4-6`).
+
+#### `report` — (tái) ghi `out/report.md` + `out/candidates.json` từ DB
+
+```bash
+bun run report
+```
+
+Không có cờ (đọc `analysis.db` mặc định).
+
+#### `calibrate` — cổng tin cậy: kiểm tra thủ công + tự đối chiếu
+
+Thủ công, **không** nằm trong pipeline tự động.
+
+```bash
+bun run calibrate                       # kiểm tra thủ công tương tác
+bun run calibrate --non-interactive     # chỉ lấy mẫu + tự đối chiếu, không hỏi
+bun run calibrate --sample N            # số episode cần kiểm tra
+bun run calibrate --self-consistency K  # chấm lại K episode để đo độ ổn định của judge
+```
+
+### An toàn chi phí (áp dụng cho mọi lần chạy có chấm điểm)
+
+Một lần chạy mới với chi phí ước tính trên ~\$5 sẽ hỏi xác nhận và **thất bại an toàn khi
+không có TTY** — truyền `--yes` để tự động hóa. `--max-cost` giới hạn tổng chi tiêu tích lũy,
+`--max-episodes` giới hạn số lần gọi, và 5 lần judge thất bại liên tiếp sẽ kích hoạt cầu dao
+ngắt mạch để một CLI lỗi không thể đốt hết ngân sách. Các cờ dạng số sẽ từ chối giá trị không
+phải số thay vì âm thầm bỏ giới hạn.
 
 ## Lưu ý chi phí / thời gian
 
