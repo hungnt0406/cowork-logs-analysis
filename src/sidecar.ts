@@ -10,7 +10,8 @@
 // business context; offline it falls back to a deterministic note. Never throws.
 
 import type { RankedCandidate } from "./types.ts";
-import { runnerEnv } from "./runner.ts";
+import { runClaudeText } from "./runner.ts";
+import { sanitizeText } from "./privacy.ts";
 
 export interface BusinessNote {
   cluster_id: string;
@@ -24,39 +25,27 @@ async function llmBusinessNotes(
   businessContext: string,
   timeoutMs: number
 ): Promise<Map<string, string> | null> {
+  // Redact before egress (POLICY §3): risk_flags can quote first_prompt substrings,
+  // and the supplied business context is user free-text that may carry secrets/PII.
   const slim = candidates.map((c) => ({
     cluster_id: c.cluster_id,
-    label: c.label,
+    label: sanitizeText(c.label ?? "").text,
     recommended_intervention: c.recommended_intervention,
-    risk_flags: c.risk_flags,
+    risk_flags: (c.risk_flags ?? []).map((f) => sanitizeText(f).text),
   }));
+  const safeContext = sanitizeText(businessContext).text;
   const rubric = `You are a BUSINESS-CRITIQUE sidecar. The workflow candidates below were
 ranked purely on user behaviour, with NO business context — that independence is intentional.
 Your ONLY job now is to add a one-sentence business note per candidate: how it relates to the
 business context, and what a domain owner should check before codifying it. Do NOT re-score.
 Return ONLY a JSON object mapping cluster_id → business note string.`;
-  const prompt = `${rubric}\n\n## BUSINESS CONTEXT\n${businessContext}\n\n## CANDIDATES\n${JSON.stringify(
+  const prompt = `${rubric}\n\n## BUSINESS CONTEXT\n${safeContext}\n\n## CANDIDATES\n${JSON.stringify(
     slim
   )}\n`;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const inner = await runClaudeText(prompt, { timeoutMs });
+  if (inner === null) return null; // timeout/spawn/parse failure → caller falls back
   try {
-    const proc = Bun.spawn(["claude", "-p", "--output-format", "json"], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      signal: ctrl.signal,
-      env: { ...process.env, ...(await runnerEnv()) },
-    });
-    proc.stdin.write(prompt);
-    await proc.stdin.end();
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    clearTimeout(timer);
-
-    const envelope = JSON.parse(out);
-    const inner = typeof envelope?.result === "string" ? envelope.result : out;
     const match = inner.match(/\{[\s\S]*\}/);
     const obj = JSON.parse(match ? match[0] : inner);
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
@@ -67,7 +56,6 @@ Return ONLY a JSON object mapping cluster_id → business note string.`;
     }
     return map;
   } catch {
-    clearTimeout(timer);
     return null; // never throw — caller falls back
   }
 }

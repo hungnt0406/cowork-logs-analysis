@@ -9,7 +9,7 @@
 // never raw transcript content. Pure aside from file reads. Never throws on bad input.
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
 import type { RankedCandidate, ConvergedWorkflow, SkillType } from "./types.ts";
 
 const DEFAULT_STATE_DIR = join(import.meta.dir, "..", "out", "state");
@@ -31,7 +31,12 @@ export function loadExports(paths: string[]): MachineCandidate[] {
     } catch {
       continue;
     }
-    const machineId = typeof data?.machine_id === "string" ? data.machine_id : p;
+    // Fall back to the file's basename (not the full path) so local directory
+    // structure never leaks into convergence.json / per_machine_frequency keys.
+    const machineId =
+      typeof data?.machine_id === "string" && data.machine_id
+        ? data.machine_id
+        : basename(p).replace(/^candidates_/, "").replace(/\.json$/, "") || "unknown-host";
     const cands = Array.isArray(data?.candidates) ? data.candidates : [];
     for (const c of cands) {
       if (c && typeof c === "object") out.push({ machineId, candidate: c as RankedCandidate });
@@ -44,6 +49,7 @@ export function discoverExportPaths(stateDir = DEFAULT_STATE_DIR): string[] {
   try {
     return readdirSync(stateDir)
       .filter((f) => f.startsWith("candidates_") && f.endsWith(".json"))
+      .sort() // stable order — readdir enumeration order is filesystem-dependent
       .map((f) => join(stateDir, f));
   } catch {
     return [];
@@ -94,10 +100,22 @@ function pickIntervention(members: MachineCandidate[]): SkillType {
 // Greedy cluster candidates across machines.
 export function converge(items: MachineCandidate[]): ConvergedWorkflow[] {
   const allMachines = new Set(items.map((i) => i.machineId));
+
+  // Deterministic input order. Greedy clustering is order-sensitive, and the caller's
+  // order depends on filesystem enumeration — sort so the merge is reproducible.
+  const sorted = [...items].sort(
+    (a, b) =>
+      a.machineId.localeCompare(b.machineId) ||
+      (a.candidate.label ?? "").localeCompare(b.candidate.label ?? "") ||
+      (a.candidate.cluster_id ?? "").localeCompare(b.candidate.cluster_id ?? "")
+  );
+
   const clusters: MachineCandidate[][] = [];
+  // SEED signature per cluster — never mutated. Growing it as members joined diluted
+  // Jaccard (denominator grew), making big clusters progressively harder to match.
   const sigs: Set<string>[] = [];
 
-  for (const it of items) {
+  for (const it of sorted) {
     const sig = signature(it.candidate);
     let bestI = -1;
     let best = 0;
@@ -110,28 +128,30 @@ export function converge(items: MachineCandidate[]): ConvergedWorkflow[] {
     }
     if (bestI >= 0 && best >= SIM_THRESHOLD) {
       clusters[bestI].push(it);
-      for (const x of sig) sigs[bestI].add(x);
     } else {
       clusters.push([it]);
       sigs.push(new Set(sig));
     }
   }
 
-  const converged: ConvergedWorkflow[] = clusters.map((members, idx) => {
+  const converged: ConvergedWorkflow[] = clusters.map((members) => {
     const machines = [...new Set(members.map((m) => m.machineId))].sort();
     const perMachine: Record<string, number> = {};
     for (const m of members) {
       perMachine[m.machineId] = (perMachine[m.machineId] ?? 0) + (m.candidate.frequency ?? 0);
     }
-    const label = members[0].candidate.label ?? `workflow-${idx}`;
+    const label = members[0].candidate.label ?? "workflow";
     return {
-      converged_id: sha1ish(`conv|${idx}|${label}`),
+      // Content-based id (label + contributing machines): stable across runs and
+      // independent of cluster array position.
+      converged_id: sha1ish(`conv|${label.toLowerCase()}|${machines.join(",")}`),
       label,
       machines,
       n_machines: machines.length,
       total_frequency: Object.values(perMachine).reduce((a, b) => a + b, 0),
       per_machine_frequency: perMachine,
-      representative_clusters: members.map((m) => m.candidate.cluster_id),
+      // machine-prefixed: cluster_id is unique only per-machine, so prefix to stay traceable.
+      representative_clusters: members.map((m) => `${m.machineId}:${m.candidate.cluster_id}`),
       recommended_intervention: pickIntervention(members),
       agreement: Number((machines.length / Math.max(1, allMachines.size)).toFixed(3)),
       cross_validated: machines.length >= 2,
@@ -139,7 +159,10 @@ export function converge(items: MachineCandidate[]): ConvergedWorkflow[] {
   });
 
   converged.sort(
-    (a, b) => Number(b.cross_validated) - Number(a.cross_validated) || b.total_frequency - a.total_frequency
+    (a, b) =>
+      Number(b.cross_validated) - Number(a.cross_validated) ||
+      b.total_frequency - a.total_frequency ||
+      a.label.localeCompare(b.label) // stable tiebreak
   );
   return converged;
 }

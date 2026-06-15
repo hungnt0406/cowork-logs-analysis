@@ -19,7 +19,8 @@ import type {
   SkillType,
 } from "./types.ts";
 import { median } from "./util.ts";
-import { runnerEnv } from "./runner.ts";
+import { runClaudeText } from "./runner.ts";
+import { sanitizeText } from "./privacy.ts";
 
 // Internal flag: LLM grouping pass ON by default, gated so it can be disabled
 // (e.g. for deterministic tests) without code changes. Falls back gracefully.
@@ -151,45 +152,30 @@ Given a JSON array of distinct task-type strings, merge near-duplicates and obvi
 into shared cluster labels (e.g. "bug fix" and "defect repair" → "bug fix"). Keep labels short,
 lowercase, human-readable. Do NOT invent tasks that aren't represented. Return ONLY a JSON object
 mapping each input string to its cluster label: {"<input>": "<cluster label>", ...}.`;
-  const prompt = `${rubric}\n\n## INPUT\n${JSON.stringify(normalized)}\n`;
+  // Redact before egress (POLICY §3). task_type labels are judge-derived categories
+  // (low risk) but the gate covers every egress point; send sanitized strings and
+  // map the LLM's keyed-by-sanitized response back to the original task_types.
+  const safe = normalized.map((s) => sanitizeText(s).text);
+  const prompt = `${rubric}\n\n## INPUT\n${JSON.stringify(safe)}\n`;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const inner = await runClaudeText(prompt, { model: LLM_CLUSTER_MODEL, timeoutMs });
+  if (inner === null) return null; // timeout/spawn/parse failure — caller falls back
   try {
-    const proc = Bun.spawn(
-      ["claude", "-p", "--model", LLM_CLUSTER_MODEL, "--output-format", "json"],
-      {
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-        signal: ctrl.signal,
-        env: { ...process.env, ...(await runnerEnv()) },
-      }
-    );
-    proc.stdin.write(prompt);
-    await proc.stdin.end();
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    clearTimeout(timer);
-
-    const envelope = JSON.parse(out);
-    const inner = typeof envelope?.result === "string" ? envelope.result : out;
     const match = inner.match(/\{[\s\S]*\}/);
     const obj = JSON.parse(match ? match[0] : inner);
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
 
     const map = new Map<string, string>();
-    for (const key of normalized) {
-      const v = obj[key];
+    for (let i = 0; i < normalized.length; i++) {
+      const v = obj[safe[i]];
       // Only accept non-empty string cluster labels; otherwise identity.
       map.set(
-        key,
-        typeof v === "string" && v.trim() ? v.toLowerCase().trim() : key
+        normalized[i],
+        typeof v === "string" && v.trim() ? v.toLowerCase().trim() : normalized[i]
       );
     }
     return map;
   } catch {
-    clearTimeout(timer);
     return null; // never throw, never block — caller falls back
   }
 }

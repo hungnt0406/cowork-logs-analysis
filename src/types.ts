@@ -21,6 +21,12 @@ export type SkillType = "skill" | "script" | "sop" | "none";
 export const LABEL_SCHEMA_VERSION = "1";
 export const RENDER_CHAR_CAP = 12000;
 
+// Bump whenever the redaction rules in src/privacy.ts change. Folded into the judge
+// prompt hash (see getJudgePromptHash in judge.ts) so a redaction-logic change
+// invalidates cached labels that were judged on differently-redacted text — no DB
+// migration needed. Leave at "1" to keep pre-existing caches; bump to force re-judge.
+export const PRIVACY_RULES_VERSION = "1";
+
 // ── Raw transcript event (one JSON object per .jsonl line) ────────────────────
 // Loosely typed: only the fields the pipeline relies on are named.
 export interface RawEvent {

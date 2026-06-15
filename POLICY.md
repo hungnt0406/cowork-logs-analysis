@@ -21,8 +21,10 @@ are enforced in code, not just documented.
 - **Credentials** (API key / password / token / private key / JWT / connection string)
   are **DROPPED** (`[REDACTED-*]`) before any text reaches the LLM.
 - **PII** (email / phone / national-id / bank-acct / money / customer-code) is **MASKED**.
-- The gate runs at **every LLM egress point**: `render.ts` (→ judge) and
-  `calibrate.ts` reconstruction (→ judge). Local report exemplars are sanitised too.
+- The gate runs at **every LLM egress point**: `render.ts` (→ judge),
+  `calibrate.ts` reconstruction (→ judge), the turn-classifier pass (`classify.ts`),
+  the mine clustering pass (`mine.ts`), and the business sidecar (`sidecar.ts`).
+  Local report exemplars are sanitised too.
 
 ## 4. Transparency / audit — `out/state/audit.json`
 - Every run records: sessions read vs opted-out, episodes judged, redaction hits,

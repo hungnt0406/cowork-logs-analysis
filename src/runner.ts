@@ -51,6 +51,45 @@ function parseExports(out: string): Record<string, string> {
   return env;
 }
 
+// Shared headless `claude -p` call. The single place the non-judge call sites
+// (classify / mine / sidecar) spawn the CLI, so runner env, timeout, and the JSON
+// envelope unwrap live here rather than being copy-pasted. Returns the inner
+// `.result` string (or raw stdout if no envelope); callers extract their own JSON
+// array/object from it. Returns null on timeout / spawn / parse failure so every
+// caller can fall back gracefully. NEVER throws.
+// (The judge keeps its own spawn — it layers retry logic on top and is the cached
+// critical path; consolidating it is a safe follow-up, not done here.)
+export async function runClaudeText(
+  prompt: string,
+  opts?: { model?: string; timeoutMs?: number }
+): Promise<string | null> {
+  const timeoutMs = opts?.timeoutMs ?? 60000;
+  const argv = ["claude", "-p", "--output-format", "json"];
+  if (opts?.model) argv.splice(2, 0, "--model", opts.model);
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const proc = Bun.spawn(argv, {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      signal: ctrl.signal,
+      env: { ...process.env, ...(await runnerEnv()) },
+    });
+    proc.stdin.write(prompt);
+    await proc.stdin.end();
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(timer);
+    const envelope = JSON.parse(out);
+    return typeof envelope?.result === "string" ? envelope.result : out;
+  } catch {
+    clearTimeout(timer);
+    return null; // never throw — caller falls back
+  }
+}
+
 // Memoized: env overrides to merge into a `claude` spawn. {} for the plain runner.
 // Resolved at most once per process (a Promise so concurrent callers share it).
 let _envPromise: Promise<Record<string, string>> | null = null;

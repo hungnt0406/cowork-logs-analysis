@@ -7,7 +7,9 @@
 //   * only candidates whose recommended_intervention is skill|script|sop,
 //   * writes to a REVIEW QUEUE (out/skill_drafts/<slug>/), never to a live skills dir,
 //   * every draft ships a runnable `bun test` suite + REVIEW.md checklist,
-//   * self-eval runs that suite so a draft proves it works before a human reviews it.
+//   * self-eval runs that suite so a draft proves its SCAFFOLD compiles and runs before
+//     a human reviews it (the generated golden cases are placeholders — a PASS means the
+//     scaffold is wired correctly, NOT that the workflow logic is validated).
 //
 // Skill structure follows principle: deterministic steps = script,
 // reasoning = (left to the author) llm, guard = hooks noted in REVIEW.md.

@@ -27,9 +27,12 @@ const CRED_RULES: Array<[string, RegExp, string]> = [
     "[REDACTED-APIKEY]",
   ],
   ["bearer_hdr", /bearer\s+[A-Za-z0-9._\-]{12,}/gi, "[REDACTED-BEARER]"],
+  ["basic_hdr", /basic\s+[A-Za-z0-9+/=]{16,}/gi, "[REDACTED-BASIC]"],
   [
     "known_secret",
-    /\b(?:sk-ant-[A-Za-z0-9_\-]{12,}|sk-[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_\-]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}|glpat-[A-Za-z0-9_\-]{16,})\b/g,
+    // sk-[...] allows interior - / _ so hyphenated keys (sk-ant-…, sk-proj-…) are caught,
+    // not just the first segment. Stripe sk_live_/rk_/pk_ (underscore form) added.
+    /\b(?:sk-[A-Za-z0-9_\-]{12,}|(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_\-]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}|glpat-[A-Za-z0-9_\-]{16,})\b/g,
     "[REDACTED-SECRET]",
   ],
   ["conn_string", /\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp):\/\/[^\s"']+/gi, "[REDACTED-CONNSTRING]"],
@@ -42,7 +45,9 @@ const PII_RULES: Array<[string, RegExp, string]> = [
   ["vn_id", /\b\d{12}\b|\b\d{9}\b/g, "[ID]"],
   ["vn_phone", /(?:(?:\+?84)|0)(?:\d[ \-.]?){8,10}\d/g, "[PHONE]"],
   ["bank_acct", /\b\d{8,19}\b/g, "[ACCT]"],
-  ["money", /\b\d[\d.,]{2,}\s?(?:vnd|vnđ|đ|usd|\$)\b/gi, "[MONEY]"],
+  // Currency symbol may lead ($100) or trail (100usd / 100$); no trailing \b after
+  // "$" (a non-word char) — that boundary never matched, so 100$/$100 used to slip.
+  ["money", /\$\s?\d[\d.,]{2,}|\b\d[\d.,]{2,}\s?(?:vnd|vnđ|đ|usd|\$)/gi, "[MONEY]"],
   ["cust_code", /\b(?:KH|HD|MKH|CUS|INV)[\-_]?\d{4,}\b/gi, "[CODE]"],
 ];
 
