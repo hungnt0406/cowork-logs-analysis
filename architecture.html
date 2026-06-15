@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Cowork Workflow Miner — Kiến trúc hợp nhất</title>
+<style>
+  :root{
+    --core:#2563eb; --core-bg:#eff6ff; --core-bd:#bfdbfe;
+    --shell:#7c3aed; --shell-bg:#f5f3ff; --shell-bd:#ddd6fe;
+    --gate:#dc2626; --gate-bg:#fef2f2; --gate-bd:#fecaca;
+    --ink:#0f172a; --mut:#64748b; --line:#cbd5e1; --bg:#f8fafc; --card:#fff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55}
+  .wrap{max-width:1140px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:30px;margin:0 0 4px} h2{font-size:21px;margin:40px 0 14px;
+    border-bottom:2px solid var(--line);padding-bottom:6px}
+  .sub{color:var(--mut);margin:0 0 18px}
+  code{background:#eef2f7;padding:1px 6px;border-radius:5px;font-size:.86em}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0 6px}
+  .chip{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:600;
+    padding:6px 12px;border-radius:999px;border:1px solid}
+  .chip.core{color:var(--core);background:var(--core-bg);border-color:var(--core-bd)}
+  .chip.shell{color:var(--shell);background:var(--shell-bg);border-color:var(--shell-bd)}
+  .chip.gate{color:var(--gate);background:var(--gate-bg);border-color:var(--gate-bd)}
+  .dot{width:10px;height:10px;border-radius:50%;background:currentColor}
+
+  /* pipeline */
+  .flow{display:flex;flex-direction:column;align-items:center;gap:0;margin:8px 0}
+  .stage{width:min(720px,100%);background:var(--card);border:1px solid var(--line);
+    border-left-width:6px;border-radius:12px;padding:13px 18px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .stage.core{border-left-color:var(--core)} .stage.shell{border-left-color:var(--shell)}
+  .stage.gate{border-left-color:var(--gate);background:var(--gate-bg)}
+  .stage .t{font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .stage .d{color:var(--mut);font-size:13px;margin-top:3px}
+  .stage .f{font-size:12px;color:var(--core);margin-top:5px;font-family:ui-monospace,Menlo,monospace}
+  .stage.shell .f{color:var(--shell)} .stage.gate .f{color:var(--gate)}
+  .tag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;letter-spacing:.3px}
+  .tag.core{color:var(--core);background:var(--core-bg)} .tag.shell{color:var(--shell);background:var(--shell-bg)}
+  .tag.gate{color:#fff;background:var(--gate)}
+  .arrow{width:2px;height:22px;background:var(--line);position:relative}
+  .arrow::after{content:"";position:absolute;bottom:-1px;left:-4px;border:5px solid transparent;border-top-color:var(--line)}
+  .branchrow{display:flex;gap:18px;width:min(720px,100%);justify-content:space-between;flex-wrap:wrap}
+  .branchrow .stage{width:48%;min-width:260px}
+
+  table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--card);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #eef2f7;vertical-align:top}
+  th{background:#f1f5f9;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#475569}
+  tr:last-child td{border-bottom:none}
+  .pill{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap}
+  .pill.core{color:var(--core);background:var(--core-bg)} .pill.shell{color:var(--shell);background:var(--shell-bg)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .box h3{margin:0 0 10px;font-size:15px}
+  .box.core{border-top:3px solid var(--core)} .box.shell{border-top:3px solid var(--shell)}
+  ul{margin:6px 0;padding-left:20px} li{margin:3px 0}
+  .note{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 16px;font-size:13.5px;color:#92400e}
+  .foot{color:var(--mut);font-size:12.5px;margin-top:30px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Cowork Workflow Miner — Kiến trúc hợp nhất</h1>
+  <p class="sub">Hợp nhất 2 dự án: <b>lõi</b> = <code>cowork-logs-analysis</code> (segmentation → LLM judge → calibration → mine),
+  <b>vỏ</b> = <code>cowork-behavior-harness</code> (privacy gate · business sidecar · convergence). TechStack: TypeScript / Bun / SQLite.</p>
+
+  <div class="legend">
+    <span class="chip core"><span class="dot"></span>Lõi gốc (logs-analysis)</span>
+    <span class="chip shell"><span class="dot"></span>Vỏ hợp nhất (từ harness)</span>
+    <span class="chip gate"><span class="dot"></span>PRIVACY GATE (fail-closed)</span>
+  </div>
+
+  <h2>1. Luồng hệ thống (end-to-end)</h2>
+  <div class="flow">
+
+    <div class="stage core"><div class="t">discover <span class="tag core">CORE</span></div>
+      <div class="d">Liệt kê session Claude Code thật (loại fork/agent-mode/observer).</div>
+      <div class="f">src/discover.ts → ~/.claude/projects/*/*.jsonl</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage shell"><div class="t">opt-out filter <span class="tag shell">VỎ · bảo vệ NLĐ</span></div>
+      <div class="d">Loại session người lao động đã opt-out (<code>.cwbh-exclude</code> / path personal·private) TRƯỚC khi đọc nội dung.</div>
+      <div class="f">src/privacy.ts → filterExcluded()</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">classify (turn roles) <span class="tag core">CORE</span></div>
+      <div class="d">Gán vai trò mỗi lượt: new_task · correction · continuation · approval · interruption · paste.</div>
+      <div class="f">src/classify.ts</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">segment → episodes <span class="tag core">CORE</span></div>
+      <div class="d">Gom lượt thành episode (new_task → next new_task); correction nằm TRONG episode.</div>
+      <div class="f">src/segment.ts</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">signals + subagents <span class="tag core">CORE</span></div>
+      <div class="d">Evidence signals (directional/weighted) + nén subagent vào episode cha.</div>
+      <div class="f">src/signals.ts · src/subagents.ts</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage gate"><div class="t">render &nbsp;✚&nbsp; PRIVACY GATE <span class="tag gate">EGRESS · fail-closed</span></div>
+      <div class="d">View gọn ≤12k ký tự cho judge. <b>Credential → DROP, PII → MASK ngay trước khi text rời máy tới LLM.</b></div>
+      <div class="f">src/render.ts → renderEpisodeSafe() → src/privacy.ts sanitizeRendered()</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">judge (LLM thật) <span class="tag core">CORE</span></div>
+      <div class="d">Rubric chống Claude-grade-Claude, neo vào user-observable behavior. Cache-key đa thành phần, retry, circuit-breaker, cost-cap.</div>
+      <div class="f">src/judge.ts + prompts/judge.md → claude -p (runner ccs|claude)</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">SQLite (analysis.db) <span class="tag core">CORE</span></div>
+      <div class="d">sessions · turns · episodes · features · evidence · labels · calibration · clusters.</div>
+      <div class="f">src/db.ts · src/schema.sql</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">calibrate (cổng tin cậy) <span class="tag core">CORE</span></div>
+      <div class="d">Stratified human spot-check + self-consistency + auto cross-check. (Reconstruct cũng đi qua PRIVACY GATE.)</div>
+      <div class="f">src/calibrate.ts</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">mine (cluster + good/bad) <span class="tag core">CORE</span></div>
+      <div class="d">Cluster task_type, contrast pattern tốt/xấu, ranking component (no composite score), Laplace smoothing, "insufficient evidence".</div>
+      <div class="f">src/mine.ts</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage shell"><div class="t">business sidecar (join LATE) <span class="tag shell">VỎ</span></div>
+      <div class="d">Thêm business note SAU khi đã rank. Judge &amp; mine <b>business-blind</b> để giữ tính độc lập đánh giá.</div>
+      <div class="f">src/sidecar.ts → report.ts (--business)</div></div>
+    <div class="arrow"></div>
+
+    <div class="stage core"><div class="t">report + candidates.json <span class="tag core">CORE</span></div>
+      <div class="d">Báo cáo exemplar-driven (Go/Kill gate). Cũng xuất <code>candidates_&lt;machine&gt;.json</code> cho convergence.</div>
+      <div class="f">src/report.ts → out/report.md · out/candidates.json</div></div>
+    <div class="arrow"></div>
+
+    <div class="branchrow">
+      <div class="stage shell"><div class="t">converge <span class="tag shell">VỎ · meta gate</span></div>
+        <div class="d">Gom candidates nhiều máy → workflow xuất hiện ≥2 máy = <b>cross-validated</b>.</div>
+        <div class="f">src/converge.ts → out/convergence.md</div></div>
+    </div>
+
+  </div>
+
+  <div class="note">🔒 <b>Privacy là cổng fail-closed:</b> mọi điểm text rời máy tới LLM (render→judge, calibrate-reconstruct→judge) đều đi qua <code>privacy.sanitizeRendered()</code>. Credential bị DROP, PII bị MASK. Audit ghi tại <code>out/state/audit.json</code>.</div>
+
+  <h2>2. Bản đồ module</h2>
+  <table>
+    <tr><th>File</th><th>Vai trò</th><th>Nguồn</th></tr>
+    <tr><td><code>src/discover.ts</code></td><td>Liệt kê session thật</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/classify.ts</code></td><td>Phân loại vai trò lượt (6 vai)</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/segment.ts</code></td><td>Gom lượt → episode</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/signals.ts</code> · <code>subagents.ts</code></td><td>Evidence signals + nén subagent</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/render.ts</code></td><td>View gọn cho judge <b>+ gọi privacy gate</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/judge.ts</code> + <code>prompts/judge.md</code></td><td>LLM judge bias-anchored + cache-key</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/calibrate.ts</code></td><td>Cổng tin cậy (stratified + self-consistency)</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/mine.ts</code></td><td>Cluster + ranking component</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/report.ts</code></td><td>Report + candidates <b>+ gọi sidecar + machine export</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/db.ts</code> · <code>schema.sql</code></td><td>SQLite persistence</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/privacy.ts</code></td><td><b>Privacy gate: credential DROP / PII MASK + opt-out</b></td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/sidecar.ts</code></td><td><b>Business sidecar (join late)</b></td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/converge.ts</code></td><td><b>Hội tụ cross-machine</b></td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>pipeline.ts</code></td><td>Orchestrator <b>+ opt-out filter + audit</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/merge.test.ts</code></td><td><b>Test cho vỏ (privacy/converge)</b></td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>POLICY.md</code></td><td><b>Chính sách bảo vệ NLĐ &amp; dữ liệu</b></td><td><span class="pill shell">VỎ</span></td></tr>
+  </table>
+
+  <h2>3. Ràng buộc — enforce ở đâu</h2>
+  <div class="grid2">
+    <div class="box core"><h3>Giữ từ lõi logs-analysis</h3><ul>
+      <li><b>AB trên log thật</b> — discover đọc transcript thật, judge bằng LLM thật.</li>
+      <li><b>Phân biệt tốt/xấu đáng tin</b> — rubric chống thiên vị + calibration trust gate.</li>
+      <li><b>Chỉ gợi ý</b> — dừng ở Go/Kill gate (candidates.json), không tự tạo.</li>
+      <li><b>Trung thực N nhỏ</b> — no composite score, Laplace smoothing, "insufficient evidence".</li>
+    </ul></div>
+    <div class="box shell"><h3>Thêm từ vỏ harness</h3><ul>
+      <li><b>Bảo vệ NLĐ &amp; dữ liệu (API/Pass)</b> — privacy gate fail-closed + opt-out + POLICY + audit.</li>
+      <li><b>Business = sidecar, join late</b> — judge/mine business-blind; note ghép sau.</li>
+      <li><b>Hội tụ nhiều máy</b> — converge → cross-validated (open gate cho meta).</li>
+    </ul></div>
+  </div>
+
+  <h2>4. Kho dữ liệu &amp; sản phẩm</h2>
+  <div class="grid2">
+    <div class="box"><h3>SQLite — <code>analysis.db</code></h3>
+      <ul><li>sessions · turns · episodes · episode_features</li>
+      <li>episode_evidence · episode_labels</li>
+      <li>calibration · task_clusters</li></ul></div>
+    <div class="box"><h3>Artifacts — <code>out/</code></h3>
+      <ul><li><code>report.md</code> · <code>candidates.json</code></li>
+      <li><code>state/candidates_&lt;machine&gt;.json</code> → converge</li>
+      <li><code>convergence.md</code> · <code>convergence.json</code></li>
+      <li><code>state/audit.json</code> (privacy audit)</li></ul></div>
+  </div>
+
+  <h2>5. Lệnh chính</h2>
+  <table>
+    <tr><th>Lệnh</th><th>Tác dụng</th></tr>
+    <tr><td><code>bun run pipeline.ts --mine --business "…"</code></td><td>Full: discover→judge→mine→report (+ sidecar)</td></tr>
+    <tr><td><code>bun run pipeline.ts --no-judge --limit N</code></td><td>Smoke cấu trúc, $0 (không gọi LLM)</td></tr>
+    <tr><td><code>bun run check</code></td><td>Kiểm tra bất biến cấu trúc (PASS/FAIL)</td></tr>
+    <tr><td><code>bun run calibrate</code></td><td>Cổng tin cậy: spot-check + self-consistency</td></tr>
+    <tr><td><code>bun run converge</code></td><td>Hội tụ candidates nhiều máy → cross-validated</td></tr>
+    <tr><td><code>bun test src</code></td><td>Test vỏ hợp nhất (privacy/converge)</td></tr>
+  </table>
+
+  <p class="foot">Cowork Workflow Miner · lõi cowork-logs-analysis + vỏ cowork-behavior-harness · TypeScript/Bun/SQLite · sinh bởi quá trình hợp nhất.</p>
+
+</div>
+</body>
+</html>

@@ -7,7 +7,8 @@ import { join } from "path";
 import { homedir } from "os";
 import type { ClassifiedTurn, RawEvent, SessionInfo, TurnRole } from "./types.ts";
 import { extractUserText, countImages, readEvents, isHumanTurn } from "./util.ts";
-import { runnerEnv } from "./runner.ts";
+import { runClaudeText } from "./runner.ts";
+import { sanitizeText } from "./privacy.ts";
 
 const INTERRUPT_MARKER = "[Request interrupted by user]";
 
@@ -319,34 +320,20 @@ async function runClassifyLlm(
   }
 
   const payload = {
-    priorTask,
+    priorTask: sanitizeText(priorTask).text,
     turns: candidates.map((c) => ({
       idx: c.idx,
-      text: c.text.slice(0, 600),
+      // Redact before egress (POLICY §3): this is raw human-turn text.
+      text: sanitizeText(c.text.slice(0, 600)).text,
       gapSeconds: Math.round(c.gapSeconds),
       topicOverlap: Number(c.topicOverlap.toFixed(2)),
     })),
   };
   const prompt = `${rubric}\n\n## INPUT\n${JSON.stringify(payload)}\n`;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const inner = await runClaudeText(prompt, { timeoutMs });
+  if (inner === null) return result; // timeout/spawn/parse failure → heuristic labels
   try {
-    const proc = Bun.spawn(["claude", "-p", "--output-format", "json"], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      signal: ctrl.signal,
-      env: { ...process.env, ...(await runnerEnv()) },
-    });
-    proc.stdin.write(prompt);
-    await proc.stdin.end();
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    clearTimeout(timer);
-
-    const envelope = JSON.parse(out);
-    const inner = typeof envelope?.result === "string" ? envelope.result : out;
     // tolerate code fences / surrounding prose: grab the first JSON array
     const match = inner.match(/\[[\s\S]*\]/);
     const arr = JSON.parse(match ? match[0] : inner);
@@ -364,7 +351,6 @@ async function runClassifyLlm(
       }
     }
   } catch {
-    clearTimeout(timer);
     // fall back to heuristic/signal labels — never throw
   }
   return result;

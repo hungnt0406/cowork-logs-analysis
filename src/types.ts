@@ -21,6 +21,12 @@ export type SkillType = "skill" | "script" | "sop" | "none";
 export const LABEL_SCHEMA_VERSION = "1";
 export const RENDER_CHAR_CAP = 12000;
 
+// Bump whenever the redaction rules in src/privacy.ts change. Folded into the judge
+// prompt hash (see getJudgePromptHash in judge.ts) so a redaction-logic change
+// invalidates cached labels that were judged on differently-redacted text — no DB
+// migration needed. Leave at "1" to keep pre-existing caches; bump to force re-judge.
+export const PRIVACY_RULES_VERSION = "1";
+
 // ── Raw transcript event (one JSON object per .jsonl line) ────────────────────
 // Loosely typed: only the fields the pipeline relies on are named.
 export interface RawEvent {
@@ -198,4 +204,22 @@ export interface RankedCandidate {
   low_confidence?: boolean;
   success_rate_smoothed?: number; // Laplace-smoothed (success+1)/(judged+2); robust at small N
   n_judged?: number; // denominator behind success_rate (qa_only excluded)
+  // Filled LATE by the business sidecar (sidecar.ts) — never influences ranking.
+  business_note?: string;
+}
+
+// ── Convergence (cross-machine) ───────────────────────────────────────────────
+// A workflow that recurs across MULTIPLE machines is cross-validated → higher
+// confidence for the org-wide (meta) phase. Produced by converge.ts.
+export interface ConvergedWorkflow {
+  converged_id: string;
+  label: string;
+  machines: string[];
+  n_machines: number;
+  total_frequency: number;
+  per_machine_frequency: Record<string, number>;
+  representative_clusters: string[]; // member cluster_ids
+  recommended_intervention: SkillType;
+  agreement: number; // n_machines / total machines contributing
+  cross_validated: boolean; // n_machines >= 2
 }

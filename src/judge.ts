@@ -19,7 +19,7 @@ import type {
   FrictionPoint,
   SkillOpportunity,
 } from "./types.ts";
-import { LABEL_SCHEMA_VERSION } from "./types.ts";
+import { LABEL_SCHEMA_VERSION, PRIVACY_RULES_VERSION } from "./types.ts";
 import { sha256 } from "./util.ts";
 import { runnerEnv, describeRunner } from "./runner.ts";
 
@@ -56,7 +56,16 @@ function readJudgePrompt(): string {
 let _judgePromptHashCache: string | null = null;
 export function getJudgePromptHash(): string {
   if (_judgePromptHashCache === null) {
-    _judgePromptHashCache = sha256(readJudgePrompt());
+    // Fold in PRIVACY_RULES_VERSION: the judge reads redacted text, so a redaction
+    // change must invalidate cached labels just like editing the prompt does. Cheaper
+    // than a new DB column — the prompt hash is already in the cache key (db.ts).
+    // "1" reproduces the legacy hash (no suffix) so existing caches stay valid; any
+    // bump (-> "2", ...) invalidates and forces a re-judge on the new redaction rules.
+    const prompt = readJudgePrompt();
+    _judgePromptHashCache =
+      PRIVACY_RULES_VERSION === "1"
+        ? sha256(prompt)
+        : sha256(prompt + " privacy:" + PRIVACY_RULES_VERSION);
   }
   return _judgePromptHashCache;
 }

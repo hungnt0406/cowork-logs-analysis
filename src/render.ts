@@ -11,6 +11,7 @@
 import type { Episode, RawEvent } from "./types.ts";
 import { extractUserText, countImages } from "./util.ts";
 import { RENDER_CHAR_CAP } from "./types.ts";
+import { sanitizeRendered } from "./privacy.ts";
 
 const USER_TEXT_CAP = 700;
 const ASSISTANT_TEXT_CAP = 1000;
@@ -145,9 +146,18 @@ function fitWithinCap(conversationBody: string, appended: string): string {
   return result.length <= RENDER_CHAR_CAP ? result : result.slice(0, RENDER_CHAR_CAP);
 }
 
-export function renderEpisode(episode: Episode): string {
-  const events: RawEvent[] = Array.isArray(episode.events) ? episode.events : [];
+// Full result including the privacy-gate redaction stats. The pipeline uses this
+// to audit how much PII/credential material was stripped before the LLM saw it.
+export interface RenderResult {
+  text: string; // sanitized — safe to send to the judge
+  rawLen: number;
+  nRedactionHits: number; // total rule fires
+  hadCredential: boolean;
+  nStrongPii: number;
+}
 
+export function renderEpisodeSafe(episode: Episode): RenderResult {
+  const events: RawEvent[] = Array.isArray(episode.events) ? episode.events : [];
   const conversationBody = buildConversation(events).join("\n");
 
   const signalsBlock = buildSignalsBlock(episode);
@@ -156,5 +166,19 @@ export function renderEpisode(episode: Episode): string {
     ? signalsBlock + "\n\n" + subagentsBlock
     : signalsBlock;
 
-  return fitWithinCap(conversationBody, appended);
+  const raw = fitWithinCap(conversationBody, appended);
+  // PRIVACY GATE — drop credentials / mask PII before this text can reach the LLM.
+  const red = sanitizeRendered(raw);
+  return {
+    text: red.text,
+    rawLen: raw.length,
+    nRedactionHits: red.hits.length,
+    hadCredential: red.hadCredential,
+    nStrongPii: red.nStrongPii,
+  };
+}
+
+// Back-compat: callers that only need the (sanitized) text.
+export function renderEpisode(episode: Episode): string {
+  return renderEpisodeSafe(episode).text;
 }
