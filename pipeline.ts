@@ -1,9 +1,13 @@
 // Orchestrator (resumable): discover → classify → group → signals → subagents → render → judge → store.
 // Usage:
 //   bun run pipeline.ts [--project <substr>] [--limit N] [--since ISO] [--resume]
-//                       [--classify-llm] [--max-episodes N] [--no-judge]
-//                       [--max-cost USD] [--yes] [--db <path>] [--mine] [--panel]
-//                       [--runner ccs|claude] [--ccs-profile <name>]
+//                       [--sessions <id,id,…>] [--classify-llm] [--max-episodes N]
+//                       [--no-judge] [--max-cost USD] [--yes] [--db <path>] [--mine]
+//                       [--panel] [--runner ccs|claude] [--ccs-profile <name>]
+//
+// --sessions restricts the run to an explicit allowlist of session ids (full or short
+//   prefix), composing with --project/--since/--limit. Used by the interactive wizard
+//   (run.ts) to honor per-session picks.
 //
 // --panel runs the multi-judge panel (outcome + efficiency + quality + consolidator =
 //   4 SERIAL calls/episode, ~4× cost & latency) instead of the single outcome judge.
@@ -62,6 +66,7 @@ interface Flags {
   project?: string;
   limit?: number;
   since?: string;
+  sessions?: string[];
   resume: boolean;
   classifyLlm: boolean;
   maxEpisodes?: number;
@@ -98,6 +103,9 @@ function parseFlags(argv: string[]): Flags {
       case "--project": f.project = next(); break;
       case "--limit": f.limit = numFlag("--limit", next()); break;
       case "--since": f.since = next(); break;
+      case "--sessions":
+        f.sessions = (next() ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+        break;
       case "--resume": f.resume = true; break;
       case "--classify-llm": f.classifyLlm = true; break;
       case "--max-episodes": f.maxEpisodes = numFlag("--max-episodes", next()); break;
@@ -164,6 +172,7 @@ async function main() {
     project: flags.project,
     since: flags.since,
     limit: flags.limit,
+    sessions: flags.sessions,
   });
   // PRIVACY / worker-protection — drop opt-out sessions BEFORE reading content.
   const { kept: sessions, excluded } = filterExcluded(discovered);

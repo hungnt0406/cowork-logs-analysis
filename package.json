@@ -5,6 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "start": "bun run run.ts",
     "discover": "bun run src/discover.ts",
     "classify": "bun run src/classify.ts",
     "pipeline": "bun run pipeline.ts",

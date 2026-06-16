@@ -62,6 +62,7 @@ export async function discoverSessions(opts?: {
   project?: string;
   since?: string;
   limit?: number;
+  sessions?: string[]; // allowlist: keep only sessions matching an entry by full id or prefix
 }): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = [];
 
@@ -141,6 +142,12 @@ export async function discoverSessions(opts?: {
   if (opts?.since) {
     const since = opts.since;
     result = result.filter((s) => s.completedAt && s.completedAt >= since);
+  }
+  // Explicit session allowlist (e.g. from the interactive wizard's per-session picks).
+  // Match by full sessionId OR prefix so short 8-char ids work too.
+  if (opts?.sessions?.length) {
+    const want = opts.sessions;
+    result = result.filter((s) => want.some((id) => s.sessionId === id || s.sessionId.startsWith(id)));
   }
 
   // Sort by startedAt ascending (empty timestamps sort first/stable).

@@ -30,6 +30,21 @@ the `claude` subprocess. Pass `--runner claude` to use the plain `claude` login 
 
 ## Run
 
+### Quick start (interactive, recommended)
+
+One command drives the whole flow — it installs deps, lists your sessions, lets you pick
+specific ones (or all), runs the pipeline, and offers to draft skills:
+
+```bash
+./start.sh          # installs Bun if missing, then launches the wizard
+# or, if Bun is already installed:
+bun run start
+```
+
+The wizard checks for the `claude` CLI (and `ccs`); if `claude` is missing it offers only the
+free `--no-judge` structure smoke. Selection accepts `all` or a list like `1,3,5-8`. Prefer the
+manual commands below? They all still work — the wizard just assembles them for you.
+
 New here? Two things make this safe to poke at: the **`--no-judge` path costs $0**
 (no LLM calls at all), and the full run is **resumable + cache-keyed** (re-running
 never re-judges an episode unless its content or the rubric changed). So work up
@@ -296,6 +311,21 @@ pipeline sẽ tiêm env của profile đó (`ANTHROPIC_BASE_URL` / `ANTHROPIC_AU
 với runner mặc định `--runner ccs`; `--runner claude` không cần phụ thuộc này.)
 
 ## Chạy
+
+### Bắt đầu nhanh (tương tác, khuyến nghị)
+
+Một lệnh điều khiển toàn bộ quy trình — tự cài dependency, liệt kê các phiên, cho bạn chọn
+phiên cụ thể (hoặc tất cả), chạy pipeline, và đề nghị soạn skill:
+
+```bash
+./start.sh          # tự cài Bun nếu thiếu, rồi mở wizard
+# hoặc, nếu đã có Bun:
+bun run start
+```
+
+Wizard kiểm tra `claude` CLI (và `ccs`); nếu thiếu `claude` thì chỉ cho chạy smoke cấu trúc
+miễn phí `--no-judge`. Phần chọn nhận `all` hoặc danh sách kiểu `1,3,5-8`. Thích các lệnh thủ
+công bên dưới? Chúng vẫn hoạt động — wizard chỉ ráp chúng lại giúp bạn.
 
 Người mới? Hai điều khiến project này an toàn để thử nghiệm: đường chạy **`--no-judge`
 tốn $0** (hoàn toàn không gọi LLM), và lần chạy đầy đủ **có thể tiếp tục + dùng cache-key**
