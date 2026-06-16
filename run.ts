@@ -9,7 +9,9 @@
 // the list and shells out to the existing `pipeline.ts` / `src/skilldraft.ts`. No
 // analysis logic is duplicated here.
 import { stat } from "fs/promises";
-import { existsSync } from "fs";
+import { existsSync, readdirSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { discoverSessions } from "./src/discover.ts";
 import { filterExcluded } from "./src/privacy.ts";
 import type { SessionInfo } from "./src/types.ts";
@@ -62,6 +64,80 @@ function line() {
   console.log("─".repeat(72));
 }
 
+// ── ccs profile discovery + validation ───────────────────────────────────────
+// ccs stores each API profile as ~/.ccs/<name>.settings.json (see `ccs api list`).
+// We enumerate those names rather than hardcoding "my-api" (which only exists on
+// the author's machine) so a teammate sees THEIR profiles.
+function listCcsProfiles(): string[] {
+  try {
+    return readdirSync(join(homedir(), ".ccs"))
+      .filter((f) => f.endsWith(".settings.json"))
+      .map((f) => f.slice(0, -".settings.json".length))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+// `ccs env <profile>` is offline + instant; exit 0 means the profile resolves.
+// Validating here turns a doomed run (5 judge failures → circuit breaker) into a
+// friendly re-prompt at setup time. Returns the first error line on failure.
+async function ccsProfileWorks(profile: string): Promise<{ ok: boolean; err: string }> {
+  try {
+    const proc = Bun.spawn(["ccs", "env", profile], { stdout: "pipe", stderr: "pipe" });
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { ok: code === 0, err: (err || out).trim().split("\n")[0] || `exit ${code}` };
+  } catch (e) {
+    return { ok: false, err: (e as Error).message };
+  }
+}
+
+// Pick a ccs profile (from the detected list, or typed), validating before return.
+// Returns "" if the user gives up — the caller then falls back to `--runner claude`.
+async function chooseCcsProfile(): Promise<string> {
+  const profiles = listCcsProfiles();
+  if (profiles.length) {
+    console.log("\nAvailable ccs profiles:");
+    profiles.forEach((p, i) => console.log(`  ${i + 1}. ${p}`));
+  } else {
+    console.log("\n(Could not auto-detect ccs profiles in ~/.ccs — enter a name manually.)");
+  }
+  while (true) {
+    let chosen: string;
+    if (profiles.length === 1) {
+      chosen = profiles[0];
+      console.log(`Using the only profile: ${chosen}`);
+    } else if (profiles.length > 1) {
+      const def = profiles.includes("my-api") ? String(profiles.indexOf("my-api") + 1) : "1";
+      const pick = ask("Pick a profile by number (or type a name)", def);
+      const n = Number(pick);
+      chosen = Number.isInteger(n) && n >= 1 && n <= profiles.length ? profiles[n - 1] : pick;
+    } else {
+      chosen = ask("Which ccs profile?", "");
+      if (!chosen) {
+        console.log("  (no name entered)");
+        continue;
+      }
+    }
+    process.stdout.write(`Validating profile "${chosen}"… `);
+    const { ok, err } = await ccsProfileWorks(chosen);
+    if (ok) {
+      console.log("OK ✅");
+      return chosen;
+    }
+    console.log(`failed ❌  (${err})`);
+    const retry =
+      profiles.length === 1
+        ? askYesNo("Retry validation?", false)
+        : askYesNo("Try a different profile?", true);
+    if (!retry) return "";
+  }
+}
+
 async function main() {
   // The wizard is inherently interactive — bail clearly on non-TTY (cron, pipe).
   if (!process.stdin.isTTY) {
@@ -94,13 +170,17 @@ async function main() {
 
   // Runner: default ccs (needs the `ccs` CLI); fall back to plain `claude` login.
   let runner: "ccs" | "claude" = "ccs";
-  let ccsProfile = "my-api"; // pipeline's default --ccs-profile
+  let ccsProfile = "";
   if (hasClaude) {
     if (hasCcs) {
-      const useCcs = askYesNo("\nRoute LLM calls through the ccs profile (vs plain `claude` login)?", true);
+      const useCcs = askYesNo("\nRoute LLM calls through a ccs profile (vs plain `claude` login)?", true);
       runner = useCcs ? "ccs" : "claude";
       if (runner === "ccs") {
-        ccsProfile = ask("Which ccs profile?", "my-api");
+        ccsProfile = await chooseCcsProfile();
+        if (ccsProfile === "") {
+          runner = "claude";
+          console.log("[run] No valid ccs profile — falling back to your plain `claude` login.");
+        }
       }
     } else {
       runner = "claude";
@@ -187,7 +267,7 @@ async function main() {
   const flags = ["--mine", "--yes"]; // wizard does its own confirm below → skip pipeline's gate
   if (chosenIds.length) flags.push("--sessions", chosenIds.join(","));
   if (runner === "claude") flags.push("--runner", "claude");
-  else if (ccsProfile && ccsProfile !== "my-api") flags.push("--ccs-profile", ccsProfile);
+  else if (ccsProfile) flags.push("--ccs-profile", ccsProfile);
   if (!live) flags.push("--no-judge");
   if (live && panel) flags.push("--panel");
   if (live && classifyLlm) flags.push("--classify-llm");
