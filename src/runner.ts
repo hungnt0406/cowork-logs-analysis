@@ -33,20 +33,37 @@ export function describeRunner(): string {
   return _runner === "ccs" ? `ccs:${_ccsProfile}` : "claude";
 }
 
-// Parse the `export KEY='VALUE'` lines emitted by `ccs env <profile>`.
-function parseExports(out: string): Record<string, string> {
+// Parse the env-assignment lines emitted by `ccs env <profile>`, across shells —
+// `ccs` formats its output for the host shell, so on Windows it is NOT bash syntax:
+//   bash:        export KEY=VALUE   |  export KEY='VALUE'
+//   PowerShell:  $env:KEY = 'VALUE' |  $env:KEY="VALUE"   (note spaces around `=`)
+//   cmd:         set KEY=VALUE      |  set "KEY=VALUE"
+//   plain:       KEY=VALUE
+// Exported so the setup wizard (run.ts) can validate with the same logic the
+// pipeline actually uses, instead of merely checking the exit code.
+export function parseExports(out: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const line of out.split("\n")) {
-    const m = line.match(/^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!m) continue;
-    let v = m[2].trim();
+  for (const raw of out.split(/\r?\n/)) {
+    let line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    // Strip the shell-specific assignment prefix, if any.
+    line = line.replace(/^export\s+/, "").replace(/^set\s+/, "").replace(/^\$env:/, "");
+    // cmd quotes the whole assignment: `set "KEY=VALUE"` -> `"KEY=VALUE"`.
+    if (line.length >= 2 && line[0] === '"' && line.endsWith('"') && line.includes("=")) {
+      line = line.slice(1, -1);
+    }
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let v = line.slice(eq + 1).trim();
     if (
       v.length >= 2 &&
       ((v[0] === "'" && v.endsWith("'")) || (v[0] === '"' && v.endsWith('"')))
     ) {
       v = v.slice(1, -1);
     }
-    env[m[1]] = v;
+    env[key] = v;
   }
   return env;
 }

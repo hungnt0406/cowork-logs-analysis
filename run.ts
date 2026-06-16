@@ -14,6 +14,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { discoverSessions } from "./src/discover.ts";
 import { filterExcluded } from "./src/privacy.ts";
+import { parseExports } from "./src/runner.ts";
 import type { SessionInfo } from "./src/types.ts";
 
 // ── Small interactive helpers (built on Bun's global prompt()) ────────────────
@@ -81,7 +82,10 @@ function listCcsProfiles(): string[] {
 
 // `ccs env <profile>` is offline + instant; exit 0 means the profile resolves.
 // Validating here turns a doomed run (5 judge failures → circuit breaker) into a
-// friendly re-prompt at setup time. Returns the first error line on failure.
+// friendly re-prompt at setup time. We check the SAME thing the pipeline needs —
+// that the output parses into at least one ANTHROPIC_* var — not just exit 0, so a
+// profile whose output format we cannot read (e.g. a future shell) is caught here
+// rather than after the run starts. Returns the first error line on failure.
 async function ccsProfileWorks(profile: string): Promise<{ ok: boolean; err: string }> {
   try {
     const proc = Bun.spawn(["ccs", "env", profile], { stdout: "pipe", stderr: "pipe" });
@@ -90,7 +94,14 @@ async function ccsProfileWorks(profile: string): Promise<{ ok: boolean; err: str
       new Response(proc.stderr).text(),
     ]);
     const code = await proc.exited;
-    return { ok: code === 0, err: (err || out).trim().split("\n")[0] || `exit ${code}` };
+    if (code !== 0) {
+      return { ok: false, err: (err || out).trim().split("\n")[0] || `exit ${code}` };
+    }
+    const env = parseExports(out);
+    if (!env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY) {
+      return { ok: false, err: "no ANTHROPIC_* vars in output" };
+    }
+    return { ok: true, err: "" };
   } catch (e) {
     return { ok: false, err: (e as Error).message };
   }
