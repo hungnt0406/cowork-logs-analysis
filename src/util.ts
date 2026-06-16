@@ -49,6 +49,39 @@ export function extractUserText(message: any): string {
   return "";
 }
 
+// Defensively extract the first balanced {...} object from a model response,
+// stripping any markdown code fences or surrounding prose. Returns the JSON
+// substring (caller parses) or null when no balanced object is present.
+// Single source of truth for JSON-object extraction (judge.ts + skilldraft.ts).
+export function extractJsonObject(raw: string): string | null {
+  let s = raw.trim();
+  // Strip ```json ... ``` or ``` ... ``` fences if present.
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+
+  const start = s.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 // Count image parts in a user event's message.content.
 export function countImages(message: any): number {
   const c = message?.content;

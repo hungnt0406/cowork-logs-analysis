@@ -20,7 +20,7 @@ import type {
   SkillOpportunity,
 } from "./types.ts";
 import { LABEL_SCHEMA_VERSION, PRIVACY_RULES_VERSION } from "./types.ts";
-import { sha256 } from "./util.ts";
+import { sha256, extractJsonObject } from "./util.ts";
 import { runnerEnv, describeRunner } from "./runner.ts";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -193,36 +193,7 @@ const RETRY_NUDGE =
 
 // ── JSON extraction + validation ─────────────────────────────────────────────
 
-// Defensively extract the first balanced {...} object from a model response,
-// stripping any markdown code fences or surrounding prose.
-function extractJsonObject(raw: string): string | null {
-  let s = raw.trim();
-  // Strip ```json ... ``` or ``` ... ``` fences if present.
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) s = fence[1].trim();
-
-  const start = s.indexOf("{");
-  if (start === -1) return null;
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < s.length; i++) {
-    const ch = s[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return s.slice(start, i + 1);
-    }
-  }
-  return null;
-}
+// extractJsonObject lives in util.ts (shared with skilldraft.ts) — behavior unchanged.
 
 function isStrArray(x: any): x is string[] {
   return Array.isArray(x) && x.every((e) => typeof e === "string");

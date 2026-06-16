@@ -275,3 +275,19 @@ export function upsertCluster(db: Database, c: TaskCluster): void {
     $members: JSON.stringify(c.memberEpisodeIds),
   });
 }
+
+// Read the persisted member episode ids for a cluster. Returns [] when the cluster
+// row is absent (stale candidates.json) or the JSON is unparseable — callers treat
+// an empty result as "fall back to the deterministic path for this candidate".
+export function getClusterMembers(db: Database, clusterId: string): string[] {
+  const row = db
+    .query(`SELECT member_episode_ids_json FROM task_clusters WHERE cluster_id = ?`)
+    .get(clusterId) as { member_episode_ids_json: string | null } | null;
+  if (!row || !row.member_episode_ids_json) return [];
+  try {
+    const parsed = JSON.parse(row.member_episode_ids_json);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
