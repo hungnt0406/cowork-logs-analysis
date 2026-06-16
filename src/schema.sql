@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS episode_labels (
   root_cause            TEXT,
   outcome_evidence      TEXT,              -- JSON array
   skill_opportunity_json TEXT,
+  efficiency_json       TEXT,              -- nullable; panel mode only: {score,rationale,evidence}
+  quality_json          TEXT,              -- nullable; panel mode only: {score,rationale,evidence}
   judged_at             TEXT,
   model                 TEXT,
   judge_prompt_hash     TEXT,

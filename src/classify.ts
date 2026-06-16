@@ -306,7 +306,7 @@ interface LlmCandidate {
 async function runClassifyLlm(
   priorTask: string,
   candidates: LlmCandidate[],
-  timeoutMs = 60000
+  timeoutMs = 600000 // 10 min ceiling: never trips on a real call, only a hung CLI
 ): Promise<Map<number, TurnRole>> {
   const result = new Map<number, TurnRole>();
   if (candidates.length === 0) return result;

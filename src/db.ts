@@ -24,6 +24,21 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
 export function migrate(db: Database): void {
   const ddl = readFileSync(`${import.meta.dir}/schema.sql`, "utf8");
   db.exec(ddl);
+  // schema.sql only CREATEs tables IF NOT EXISTS — it never adds a column to an
+  // already-existing table. So a pre-panel analysis.db keeps its old episode_labels.
+  // Add the panel columns by guarded ALTER (idempotent; ADD COLUMN appends NULLable).
+  ensureColumn(db, "episode_labels", "efficiency_json", "TEXT");
+  ensureColumn(db, "episode_labels", "quality_json", "TEXT");
+}
+
+// Add `col` to `table` only if it is not already present. PRAGMA table_info is the
+// portable way to introspect columns in SQLite; ADD COLUMN with no default appends a
+// NULLable column to existing rows (the panel columns are nullable by design).
+function ensureColumn(db: Database, table: string, col: string, decl: string): void {
+  const cols = db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === col)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+  }
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -212,9 +227,9 @@ export function upsertLabel(db: Database, label: JudgeLabel, meta: JudgeMeta): v
   db.query(
     `INSERT INTO episode_labels (episode_id, task_type, task_difficulty, outcome,
        outcome_confidence, workflow_pattern_json, good_practices_json, friction_points_json,
-       root_cause, outcome_evidence, skill_opportunity_json, judged_at, model,
-       judge_prompt_hash, label_schema_version, cli_version)
-     VALUES ($id,$tt,$td,$oc,$conf,$wp,$gp,$fp,$rc,$oe,$so,$ja,$model,$jph,$lsv,$cli)
+       root_cause, outcome_evidence, skill_opportunity_json, efficiency_json, quality_json,
+       judged_at, model, judge_prompt_hash, label_schema_version, cli_version)
+     VALUES ($id,$tt,$td,$oc,$conf,$wp,$gp,$fp,$rc,$oe,$so,$eff,$qual,$ja,$model,$jph,$lsv,$cli)
      ON CONFLICT(episode_id) DO UPDATE SET
        task_type=excluded.task_type, task_difficulty=excluded.task_difficulty,
        outcome=excluded.outcome, outcome_confidence=excluded.outcome_confidence,
@@ -222,6 +237,7 @@ export function upsertLabel(db: Database, label: JudgeLabel, meta: JudgeMeta): v
        good_practices_json=excluded.good_practices_json,
        friction_points_json=excluded.friction_points_json, root_cause=excluded.root_cause,
        outcome_evidence=excluded.outcome_evidence, skill_opportunity_json=excluded.skill_opportunity_json,
+       efficiency_json=excluded.efficiency_json, quality_json=excluded.quality_json,
        judged_at=excluded.judged_at, model=excluded.model, judge_prompt_hash=excluded.judge_prompt_hash,
        label_schema_version=excluded.label_schema_version, cli_version=excluded.cli_version`
   ).run({
@@ -236,6 +252,9 @@ export function upsertLabel(db: Database, label: JudgeLabel, meta: JudgeMeta): v
     $rc: label.root_cause,
     $oe: JSON.stringify(label.outcome_evidence ?? []),
     $so: JSON.stringify(label.skill_opportunity ?? {}),
+    // null-safe: single-mode labels have no panel axes → store SQL NULL, not "undefined".
+    $eff: label.efficiency ? JSON.stringify(label.efficiency) : null,
+    $qual: label.quality ? JSON.stringify(label.quality) : null,
     $ja: meta.judged_at,
     $model: meta.model,
     $jph: meta.judge_prompt_hash,

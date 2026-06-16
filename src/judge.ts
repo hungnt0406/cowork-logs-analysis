@@ -18,8 +18,16 @@ import type {
   SkillType,
   FrictionPoint,
   SkillOpportunity,
+  EfficiencyAssessment,
+  QualityAssessment,
 } from "./types.ts";
-import { LABEL_SCHEMA_VERSION, PRIVACY_RULES_VERSION } from "./types.ts";
+import {
+  LABEL_SCHEMA_VERSION,
+  PRIVACY_RULES_VERSION,
+  RENDER_CHAR_CAP,
+  SCORE_MIN,
+  SCORE_MAX,
+} from "./types.ts";
 import { sha256, extractJsonObject } from "./util.ts";
 import { runnerEnv, describeRunner } from "./runner.ts";
 
@@ -30,8 +38,25 @@ import { runnerEnv, describeRunner } from "./runner.ts";
 // it explicitly here so the cache key is stable and auditable.
 export const MODEL = "claude-opus-4-8";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+// 600s (10 min), not 120s: through the ccs proxy the time-to-first-token alone runs
+// ~100s+ (see the MINE_LLM_TIMEOUT_MS note in mine.ts), and the panel consolidator's
+// prompt (full episode text + three verdict JSONs) is the heaviest call — at 120s it was
+// SIGTERM-killed before responding. A generous ceiling so NO real call trips it during an
+// e2e run; only a hung CLI does. This is a ceiling, not added latency: a fast call still
+// returns immediately, and the consecutive-error circuit breaker (pipeline.ts) bounds a
+// genuinely-hung CLI.
+const DEFAULT_TIMEOUT_MS = 600_000;
 const JUDGE_PROMPT_PATH = `${import.meta.dir}/../prompts/judge.md`;
+// Panel-mode prompts (used only by judgeEpisodePanel; single-mode never reads these).
+const JUDGE_EFFICIENCY_PROMPT_PATH = `${import.meta.dir}/../prompts/judge_efficiency.md`;
+const JUDGE_QUALITY_PROMPT_PATH = `${import.meta.dir}/../prompts/judge_quality.md`;
+const JUDGE_CONSOLIDATOR_PROMPT_PATH = `${import.meta.dir}/../prompts/judge_consolidator.md`;
+
+// Consolidator (deterministic seam) policy constants — see consolidateDeterministic.
+// A concrete quality failure (score ≤ 2) downgrades an apparent success to partial and
+// clamps the (now more doubtful) outcome_confidence to this ceiling.
+const QUALITY_DOWNGRADE_THRESHOLD = 2;
+const DOWNGRADE_CONFIDENCE_CEIL = 0.6;
 
 const OUTCOMES: readonly Outcome[] = [
   "success",
@@ -68,6 +93,55 @@ export function getJudgePromptHash(): string {
         : sha256(prompt + " privacy:" + PRIVACY_RULES_VERSION);
   }
   return _judgePromptHashCache;
+}
+
+// Panel-prompt readers (cached). Separate from readJudgePrompt so single-mode never
+// touches disk for the panel prompts.
+let _efficiencyPromptCache: string | null = null;
+function readEfficiencyPrompt(): string {
+  if (_efficiencyPromptCache === null) {
+    _efficiencyPromptCache = readFileSync(JUDGE_EFFICIENCY_PROMPT_PATH, "utf8");
+  }
+  return _efficiencyPromptCache;
+}
+let _qualityPromptCache: string | null = null;
+function readQualityPrompt(): string {
+  if (_qualityPromptCache === null) {
+    _qualityPromptCache = readFileSync(JUDGE_QUALITY_PROMPT_PATH, "utf8");
+  }
+  return _qualityPromptCache;
+}
+let _consolidatorPromptCache: string | null = null;
+function readConsolidatorPrompt(): string {
+  if (_consolidatorPromptCache === null) {
+    _consolidatorPromptCache = readFileSync(JUDGE_CONSOLIDATOR_PROMPT_PATH, "utf8");
+  }
+  return _consolidatorPromptCache;
+}
+
+// Panel cache discriminator. DISTINCT from getJudgePromptHash so panel-judged and
+// single-judged labels for the same episode live in different cache-key space (the
+// hash slot in db.ts/isJudged), never colliding in episode_labels (PK episode_id).
+// Folds in: a "panel:v1" tag, ALL FOUR prompts (so editing the outcome rubric also
+// invalidates panel labels), the model id list, and PRIVACY_RULES_VERSION.
+let _panelPromptHashCache: string | null = null;
+export function getPanelPromptHash(): string {
+  if (_panelPromptHashCache === null) {
+    // All four sub-calls default to MODEL; list it once as the model discriminator.
+    const modelIds = [MODEL];
+    _panelPromptHashCache = sha256(
+      "panel:v1|" +
+        readJudgePrompt() +
+        readEfficiencyPrompt() +
+        readQualityPrompt() +
+        readConsolidatorPrompt() +
+        "|models:" +
+        modelIds.join(",") +
+        "|privacy:" +
+        PRIVACY_RULES_VERSION
+    );
+  }
+  return _panelPromptHashCache;
 }
 
 export function getModel(opts?: { model?: string }): string {
@@ -177,13 +251,25 @@ export async function runApi(
 
 // ── Prompt assembly ──────────────────────────────────────────────────────────
 
-function buildPrompt(rendered: string, episodeId: string, nudge?: string): string {
+// Append the rendered episode + EPISODE_ID footer to any rubric. Shared by the
+// outcome / efficiency / quality prompts (the consolidator builds its own, since it
+// also injects the three verdict JSON blocks).
+function appendEpisode(
+  rubric: string,
+  rendered: string,
+  episodeId: string,
+  nudge?: string
+): string {
   const base =
-    readJudgePrompt() +
+    rubric +
     "\n\n--- EPISODE ---\n" +
     rendered +
     `\n\nEPISODE_ID: ${episodeId}\nReturn ONLY the JSON object.`;
   return nudge ? base + "\n\n" + nudge : base;
+}
+
+function buildPrompt(rendered: string, episodeId: string, nudge?: string): string {
+  return appendEpisode(readJudgePrompt(), rendered, episodeId, nudge);
 }
 
 const RETRY_NUDGE =
@@ -197,6 +283,44 @@ const RETRY_NUDGE =
 
 function isStrArray(x: any): x is string[] {
   return Array.isArray(x) && x.every((e) => typeof e === "string");
+}
+
+// Validate + coerce a parsed object into an EfficiencyAssessment/QualityAssessment, or
+// throw. `score` is forced to an INTEGER in SCORE_MIN..SCORE_MAX — 0/6/NaN/floats are
+// rejected (NOT rounded), so a malformed score triggers a retry rather than a silent
+// coercion. Shared by both axes (identical shape); the `kind` label sharpens errors.
+function validateAssessment(
+  obj: any,
+  kind: string
+): { score: number; rationale: string; evidence: string[] } {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new Error(`${kind} is not a JSON object`);
+  }
+  const score = obj.score;
+  if (
+    typeof score !== "number" ||
+    !Number.isInteger(score) ||
+    score < SCORE_MIN ||
+    score > SCORE_MAX
+  ) {
+    throw new Error(
+      `${kind}.score not an integer in ${SCORE_MIN}..${SCORE_MAX}: ${JSON.stringify(score)}`
+    );
+  }
+  if (typeof obj.rationale !== "string") {
+    throw new Error(`${kind}.rationale not a string`);
+  }
+  if (!isStrArray(obj.evidence)) {
+    throw new Error(`${kind}.evidence not a string[]`);
+  }
+  return { score, rationale: obj.rationale, evidence: obj.evidence };
+}
+
+export function validateEfficiency(obj: any): EfficiencyAssessment {
+  return validateAssessment(obj, "efficiency");
+}
+export function validateQuality(obj: any): QualityAssessment {
+  return validateAssessment(obj, "quality");
 }
 
 // Validate + coerce a parsed object into a JudgeLabel. Returns the label or throws
@@ -277,6 +401,26 @@ function validateLabel(obj: any, episodeId: string): JudgeLabel {
     rationale: so.rationale,
   };
 
+  // Optional panel axes — attach only when present AND valid. A malformed axis from the
+  // consolidator is DROPPED here (not fatal); consolidate() then falls back to the
+  // separately-judged input assessment. Single-mode labels never carry these → undefined.
+  let efficiency: EfficiencyAssessment | undefined;
+  if (obj.efficiency !== undefined) {
+    try {
+      efficiency = validateEfficiency(obj.efficiency);
+    } catch {
+      /* drop — caller may re-attach from the input assessment */
+    }
+  }
+  let quality: QualityAssessment | undefined;
+  if (obj.quality !== undefined) {
+    try {
+      quality = validateQuality(obj.quality);
+    } catch {
+      /* drop — caller may re-attach from the input assessment */
+    }
+  }
+
   return {
     episode_id: episodeId, // forced — do not trust the model's echo
     task_type: obj.task_type,
@@ -289,6 +433,8 @@ function validateLabel(obj: any, episodeId: string): JudgeLabel {
     root_cause: obj.root_cause,
     outcome_evidence: obj.outcome_evidence,
     skill_opportunity,
+    ...(efficiency ? { efficiency } : {}),
+    ...(quality ? { quality } : {}),
   };
 }
 
@@ -307,37 +453,78 @@ function parseAndValidate(result: string, episodeId: string): JudgeLabel {
   return validateLabel(parsed, episodeId);
 }
 
-// ── Public: judge one episode ─────────────────────────────────────────────────
+// Parse + validate one adapter response into a bare assessment ({score,rationale,
+// evidence}), or throw — the efficiency/quality sub-judges share this path.
+function parseAssessment(
+  result: string,
+  validate: (obj: any) => { score: number; rationale: string; evidence: string[] }
+): { score: number; rationale: string; evidence: string[] } {
+  const jsonStr = extractJsonObject(result);
+  if (jsonStr === null) {
+    throw new Error("no JSON object found in model response");
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch (e: any) {
+    throw new Error(`JSON.parse failed: ${e?.message ?? e}`);
+  }
+  return validate(parsed);
+}
 
-export async function judgeEpisode(
-  rendered: string,
-  episodeId: string,
-  opts?: { model?: string; adapter?: "claude" | "api" }
-): Promise<{ label: JudgeLabel; meta: JudgeMeta }> {
+// ── Adapter selection + single-retry (shared by all four panel sub-calls) ──────
+
+type Adapter = "claude" | "api";
+
+// Resolve the model + adapter into one call closure. The api adapter is still a stub
+// (runApi throws); the claude adapter is the headless `claude -p` path.
+function makeCall(opts?: { model?: string; adapter?: Adapter }): (prompt: string) => Promise<string> {
   const model = getModel(opts);
   const adapter = opts?.adapter ?? "claude";
-  const call = (prompt: string) =>
-    adapter === "api"
-      ? runApi(prompt, { model })
-      : runClaudeP(prompt, { model });
+  return (prompt: string) =>
+    adapter === "api" ? runApi(prompt, { model }) : runClaudeP(prompt, { model });
+}
 
-  let label: JudgeLabel;
+// Run one prompt, parse it; on ANY failure retry ONCE with RETRY_NUDGE appended; if the
+// retry also fails, throw with both errors. `promptFn(nudge?)` builds the prompt so the
+// nudge is appended on the second attempt. Single source of the judge try/retry shape.
+async function callWithRetry<T>(
+  what: string,
+  call: (prompt: string) => Promise<string>,
+  promptFn: (nudge?: string) => string,
+  parseFn: (result: string) => T
+): Promise<T> {
   try {
-    const first = await call(buildPrompt(rendered, episodeId));
-    label = parseAndValidate(first, episodeId);
+    return parseFn(await call(promptFn()));
   } catch (firstErr: any) {
-    // Retry ONCE with a terse nudge appended.
     try {
-      const second = await call(buildPrompt(rendered, episodeId, RETRY_NUDGE));
-      label = parseAndValidate(second, episodeId);
+      return parseFn(await call(promptFn(RETRY_NUDGE)));
     } catch (secondErr: any) {
       throw new Error(
-        `judge failed for ${episodeId} after retry. ` +
+        `${what} failed after retry. ` +
           `first: ${firstErr?.message ?? firstErr}; ` +
           `retry: ${secondErr?.message ?? secondErr}`
       );
     }
   }
+}
+
+// ── Public: judge one episode ─────────────────────────────────────────────────
+
+export async function judgeEpisode(
+  rendered: string,
+  episodeId: string,
+  opts?: { model?: string; adapter?: Adapter }
+): Promise<{ label: JudgeLabel; meta: JudgeMeta }> {
+  const model = getModel(opts);
+  const call = makeCall(opts);
+
+  const label = await callWithRetry(
+    `judge ${episodeId}`,
+    call,
+    (nudge) => buildPrompt(rendered, episodeId, nudge),
+    (r) => parseAndValidate(r, episodeId)
+  );
 
   const meta: JudgeMeta = {
     model,
@@ -350,27 +537,180 @@ export async function judgeEpisode(
   return { label, meta };
 }
 
+// ── Panel sub-judges: efficiency + quality (independent axes) ─────────────────
+
+export async function judgeEfficiency(
+  rendered: string,
+  episodeId: string,
+  opts?: { model?: string; adapter?: Adapter }
+): Promise<EfficiencyAssessment> {
+  const call = makeCall(opts);
+  return callWithRetry(
+    `efficiency ${episodeId}`,
+    call,
+    (nudge) => appendEpisode(readEfficiencyPrompt(), rendered, episodeId, nudge),
+    (r) => parseAssessment(r, validateEfficiency)
+  );
+}
+
+export async function judgeQuality(
+  rendered: string,
+  episodeId: string,
+  opts?: { model?: string; adapter?: Adapter }
+): Promise<QualityAssessment> {
+  const call = makeCall(opts);
+  return callWithRetry(
+    `quality ${episodeId}`,
+    call,
+    (nudge) => appendEpisode(readQualityPrompt(), rendered, episodeId, nudge),
+    (r) => parseAssessment(r, validateQuality)
+  );
+}
+
+// ── Consolidation seam ─────────────────────────────────────────────────────────
+// Default LLM; a pure deterministic path doubles as the LLM-fallback and the test
+// target (so the seam is exercised WITHOUT a network call).
+export type ConsolidatorMode = "llm" | "deterministic";
+
+export interface ConsolidateCtx {
+  rendered: string;
+  episodeId: string;
+  outcome: JudgeLabel; // the outcome judge's label — the SPINE
+  efficiency: EfficiencyAssessment;
+  quality: QualityAssessment;
+}
+
+function buildConsolidatorPrompt(ctx: ConsolidateCtx, nudge?: string): string {
+  // The episode is the consolidator's secondary input (the 3 verdicts are primary), so
+  // bound it to RENDER_CHAR_CAP defensively — the rendered text is already capped, but
+  // a caller could pass an uncapped string here.
+  const bounded = ctx.rendered.slice(0, RENDER_CHAR_CAP);
+  const base =
+    readConsolidatorPrompt() +
+    "\n\n--- OUTCOME VERDICT (JSON) ---\n" +
+    JSON.stringify(ctx.outcome) +
+    "\n\n--- EFFICIENCY VERDICT (JSON) ---\n" +
+    JSON.stringify(ctx.efficiency) +
+    "\n\n--- QUALITY VERDICT (JSON) ---\n" +
+    JSON.stringify(ctx.quality) +
+    "\n\n--- EPISODE ---\n" +
+    bounded +
+    `\n\nEPISODE_ID: ${ctx.episodeId}\nReturn ONLY the JSON object.`;
+  return nudge ? base + "\n\n" + nudge : base;
+}
+
+// Pure, network-free reconciliation. Outcome judge is the spine; the ONLY adjustment is
+// a concrete-quality-failure downgrade of success→partial with a clamped confidence.
+// Efficiency NEVER changes the outcome. Always attaches both assessments.
+export function consolidateDeterministic(ctx: ConsolidateCtx): JudgeLabel {
+  let outcome = ctx.outcome.outcome;
+  let outcome_confidence = ctx.outcome.outcome_confidence;
+  if (
+    ctx.quality.score <= QUALITY_DOWNGRADE_THRESHOLD &&
+    outcome === "success"
+  ) {
+    outcome = "partial";
+    outcome_confidence = Math.min(outcome_confidence, DOWNGRADE_CONFIDENCE_CEIL);
+  }
+  return {
+    ...ctx.outcome,
+    episode_id: ctx.episodeId, // forced — keep the caller's id
+    outcome,
+    outcome_confidence,
+    efficiency: ctx.efficiency,
+    quality: ctx.quality,
+  };
+}
+
+// Reconcile the three verdicts into one final label. LLM mode (default) lets the model
+// apply the rubric; on a dropped panel axis it re-attaches the separately-judged input.
+// Deterministic mode is the pure seam (fallback + test target).
+export async function consolidate(
+  ctx: ConsolidateCtx,
+  opts?: { model?: string; adapter?: Adapter; mode?: ConsolidatorMode }
+): Promise<JudgeLabel> {
+  const mode = opts?.mode ?? "llm";
+  if (mode === "deterministic") return consolidateDeterministic(ctx);
+
+  const call = makeCall(opts);
+  let label = await callWithRetry(
+    `consolidate ${ctx.episodeId}`,
+    call,
+    (nudge) => buildConsolidatorPrompt(ctx, nudge),
+    (r) => parseAndValidate(r, ctx.episodeId)
+  );
+  // If the model dropped (or malformed) an axis, fall back to the input assessment so the
+  // panel axes are ALWAYS present on a panel label.
+  if (!label.efficiency) label = { ...label, efficiency: ctx.efficiency };
+  if (!label.quality) label = { ...label, quality: ctx.quality };
+  return label;
+}
+
+// ── Public: judge one episode with the full panel (4 SERIAL calls) ────────────
+// outcome (reuses judgeEpisode verbatim — the outcome rubric stays the single source of
+// outcome) → efficiency → quality → consolidate. Serial because serial execution is the
+// only rate-limit throttle (see CLAUDE.md). Returns the SAME {label, meta} shape, with
+// meta.judge_prompt_hash = getPanelPromptHash() and label_schema_version still "1".
+export async function judgeEpisodePanel(
+  rendered: string,
+  episodeId: string,
+  opts?: { model?: string; adapter?: Adapter; consolidatorMode?: ConsolidatorMode }
+): Promise<{ label: JudgeLabel; meta: JudgeMeta }> {
+  const model = getModel(opts);
+  // The three graders share model + adapter; consolidatorMode applies to the
+  // consolidation step ONLY, so it is intentionally absent from subOpts and threaded
+  // into consolidate() below.
+  const subOpts = { model, adapter: opts?.adapter };
+
+  const { label: outcome } = await judgeEpisode(rendered, episodeId, subOpts);
+  const efficiency = await judgeEfficiency(rendered, episodeId, subOpts);
+  const quality = await judgeQuality(rendered, episodeId, subOpts);
+  const label = await consolidate(
+    { rendered, episodeId, outcome, efficiency, quality },
+    { model, adapter: opts?.adapter, mode: opts?.consolidatorMode }
+  );
+  // NOTE: meta.judge_prompt_hash = getPanelPromptHash(), which pins the model
+  // discriminator to the default MODEL (per the plan; per-axis cheaper models are
+  // deferred). The pipeline only ever panel-judges with the default model, so an
+  // opts.model override here would NOT be reflected in the panel cache key — fold the
+  // resolved model into getPanelPromptHash() first if per-call models are introduced.
+
+  const meta: JudgeMeta = {
+    model,
+    judge_prompt_hash: getPanelPromptHash(),
+    label_schema_version: LABEL_SCHEMA_VERSION,
+    cli_version: await getCliVersion(),
+    judged_at: new Date().toISOString(),
+  };
+
+  return { label, meta };
+}
+
 // ── CLI: judge a rendered-episode text file standalone ────────────────────────
-// Usage: bun run src/judge.ts <rendered-episode.txt> <episode_id> [--model M] [--api]
+// Usage: bun run src/judge.ts <rendered-episode.txt> <episode_id> [--model M] [--api] [--panel]
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const positional: string[] = [];
   let model: string | undefined;
   let adapter: "claude" | "api" = "claude";
+  let panel = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--model") model = args[++i];
     else if (a === "--api") adapter = "api";
+    else if (a === "--panel") panel = true;
     else positional.push(a);
   }
   const [path, episodeId] = positional;
   if (!path || !episodeId) {
     console.error(
-      "usage: bun run src/judge.ts <rendered-episode.txt> <episode_id> [--model M] [--api]"
+      "usage: bun run src/judge.ts <rendered-episode.txt> <episode_id> [--model M] [--api] [--panel]"
     );
     process.exit(2);
   }
   const rendered = readFileSync(path, "utf8");
-  const { label, meta } = await judgeEpisode(rendered, episodeId, { model, adapter });
+  const { label, meta } = panel
+    ? await judgeEpisodePanel(rendered, episodeId, { model, adapter })
+    : await judgeEpisode(rendered, episodeId, { model, adapter });
   console.log(JSON.stringify({ label, meta }, null, 2));
 }

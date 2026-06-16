@@ -2,8 +2,14 @@
 // Usage:
 //   bun run pipeline.ts [--project <substr>] [--limit N] [--since ISO] [--resume]
 //                       [--classify-llm] [--max-episodes N] [--no-judge]
-//                       [--max-cost USD] [--yes] [--db <path>] [--mine]
+//                       [--max-cost USD] [--yes] [--db <path>] [--mine] [--panel]
 //                       [--runner ccs|claude] [--ccs-profile <name>]
+//
+// --panel runs the multi-judge panel (outcome + efficiency + quality + consolidator =
+//   4 SERIAL calls/episode, ~4× cost & latency) instead of the single outcome judge.
+//   OFF by default → byte-for-byte the existing single-judge behavior. Panel labels use
+//   a DISTINCT judge_prompt_hash (getPanelPromptHash) so switching modes never collides
+//   in cache but does re-pay for the toggled episodes (transparent, accepted).
 //
 // --runner picks how the headless `claude -p` calls are routed (default: ccs):
 //   ccs    → real `claude` binary with the ccs profile's env injected
@@ -23,7 +29,9 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   judgeEpisode,
+  judgeEpisodePanel,
   getJudgePromptHash,
+  getPanelPromptHash,
   getModel,
   getCliVersion,
 } from "./src/judge.ts";
@@ -62,6 +70,7 @@ interface Flags {
   yes: boolean;
   dbPath?: string;
   mine: boolean;
+  panel: boolean;
   runner?: RunnerName;
   ccsProfile?: string;
   business?: string;
@@ -81,7 +90,7 @@ function numFlag(name: string, raw: string | undefined): number {
 }
 
 function parseFlags(argv: string[]): Flags {
-  const f: Flags = { resume: false, classifyLlm: false, noJudge: false, yes: false, mine: false };
+  const f: Flags = { resume: false, classifyLlm: false, noJudge: false, yes: false, mine: false, panel: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
@@ -97,6 +106,7 @@ function parseFlags(argv: string[]): Flags {
       case "--yes": case "-y": f.yes = true; break;
       case "--db": f.dbPath = next(); break;
       case "--mine": f.mine = true; break;
+      case "--panel": f.panel = true; break;
       case "--runner": {
         const v = next();
         if (v !== "ccs" && v !== "claude") {
@@ -138,9 +148,16 @@ async function main() {
   log(`LLM runner: ${describeRunner()}`);
 
   // Cache-key constants (cheap, side-effect-free getters) — resolved once.
-  const judgePromptHash = getJudgePromptHash();
+  // Panel mode keys on a DISTINCT prompt hash so its labels never collide with
+  // single-mode labels in episode_labels (PK episode_id).
+  const judgePromptHash = flags.panel ? getPanelPromptHash() : getJudgePromptHash();
   const model = getModel();
   const cliVersion = flags.noJudge ? "" : await getCliVersion();
+
+  // Panel = 4 serial calls/episode (outcome+efficiency+quality+consolidator); single = 1.
+  // Drives the est-cost gate, the --max-cost ceiling, and the spend accumulator.
+  const costPerEpisode = COST_PER_JUDGE_USD * (flags.panel ? 4 : 1);
+  if (flags.panel) log(`panel mode: ~4 calls/episode (~$${costPerEpisode.toFixed(2)}/episode)`);
 
   log(`discovering sessions${flags.project ? ` (project~="${flags.project}")` : ""}…`);
   const discovered = await discoverSessions({
@@ -167,12 +184,12 @@ async function main() {
       flags.maxEpisodes !== undefined
         ? Math.min(flags.maxEpisodes, sessions.length * AVG_EPISODES_PER_SESSION)
         : sessions.length * AVG_EPISODES_PER_SESSION;
-    const estCost = estEpisodes * COST_PER_JUDGE_USD;
+    const estCost = estEpisodes * costPerEpisode;
     if (estCost > CONFIRM_COST_THRESHOLD_USD) {
       const answer = prompt(
         `[pipeline] About to judge up to ~${estEpisodes} uncached episodes ` +
-          `(~$${estCost.toFixed(0)} at $${COST_PER_JUDGE_USD}/call; cache reduces this). ` +
-          `Proceed? [y/N] `
+          `(~$${estCost.toFixed(0)} at $${costPerEpisode.toFixed(2)}/episode${flags.panel ? " — panel: 4 calls/episode" : ""}; ` +
+          `cache reduces this). Proceed? [y/N] `
       );
       if (!answer || !/^y(es)?$/i.test(answer.trim())) {
         log("aborted at cost gate (pass --yes to skip, or --max-episodes/--max-cost to bound).");
@@ -246,19 +263,21 @@ async function main() {
         skipped++;
         continue;
       }
-      if (flags.maxCost !== undefined && spentUsd + COST_PER_JUDGE_USD > flags.maxCost) {
+      if (flags.maxCost !== undefined && spentUsd + costPerEpisode > flags.maxCost) {
         log(`reached --max-cost ceiling ($${flags.maxCost}); stopping judge phase.`);
         stopJudging = true;
         break;
       }
       episodeBudget--;
-      spentUsd += COST_PER_JUDGE_USD;
+      spentUsd += costPerEpisode;
       try {
         const r = renderEpisodeSafe(ep);
         redactionHits += r.nRedactionHits;
         strongPiiHits += r.nStrongPii;
         if (r.hadCredential) credentialEpisodes++;
-        const { label, meta } = await judgeEpisode(r.text, ep.episodeId, { model });
+        const { label, meta } = flags.panel
+          ? await judgeEpisodePanel(r.text, ep.episodeId, { model })
+          : await judgeEpisode(r.text, ep.episodeId, { model });
         upsertLabel(db, label, meta);
         judged++;
         consecErrors = 0;

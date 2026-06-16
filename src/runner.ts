@@ -63,7 +63,10 @@ export async function runClaudeText(
   prompt: string,
   opts?: { model?: string; timeoutMs?: number }
 ): Promise<string | null> {
-  const timeoutMs = opts?.timeoutMs ?? 60000;
+  // Generous 600s (10 min) fallback ceiling so a real LLM call never trips it during an
+  // e2e run (slow ccs-proxy calls land in ~130–200s); only a hung CLI hits it. Callers
+  // that want a tighter bound pass timeoutMs explicitly.
+  const timeoutMs = opts?.timeoutMs ?? 600000;
   const argv = ["claude", "-p", "--output-format", "json"];
   if (opts?.model) argv.splice(2, 0, "--model", opts.model);
 

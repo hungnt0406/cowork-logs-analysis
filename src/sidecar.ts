@@ -77,7 +77,9 @@ export async function runBusinessSidecar(
   opts?: { useLlm?: boolean; timeoutMs?: number }
 ): Promise<Map<string, string>> {
   const useLlm = (opts?.useLlm ?? true) && businessContext.trim().length > 0;
-  const timeoutMs = opts?.timeoutMs ?? 30000;
+  // 10 min ceiling: never trips on a real call, only a hung CLI (was 30s — too tight for
+  // a ccs-proxy call, which would spuriously fall back to the no-LLM heuristic notes).
+  const timeoutMs = opts?.timeoutMs ?? 600000;
 
   let llm: Map<string, string> | null = null;
   if (useLlm && candidates.length > 0) {

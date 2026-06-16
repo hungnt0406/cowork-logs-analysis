@@ -267,6 +267,15 @@ export async function report(
     );
     lines.push(`- Success rate: **${(c.success_rate * 100).toFixed(0)}%**`);
     lines.push(`- Median friction (corrections + interruptions): **${c.median_friction}**`);
+    // Panel axes — emitted ONLY when at least one member was panel-judged (--panel).
+    // Single-mode clusters render exactly as before (these lines are absent).
+    if (c.median_efficiency != null || c.median_quality != null) {
+      const eff = c.median_efficiency != null ? `${c.median_efficiency}` : "—";
+      const qual = c.median_quality != null ? `${c.median_quality}` : "—";
+      lines.push(
+        `- Median efficiency / quality (1–5, panel over ${c.n_panel_judged ?? 0} ep): **${eff}** / **${qual}**`
+      );
+    }
     lines.push(
       `- Stable success pattern: **${c.has_stable_pattern ? "yes" : "no"}**${
         c.dominant_pattern ? ` — dominant: \`${c.dominant_pattern}\`` : ""

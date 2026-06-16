@@ -18,8 +18,19 @@ export type SkillType = "skill" | "script" | "sop" | "none";
 
 // Versioning — bump LABEL_SCHEMA_VERSION whenever the judge label shape changes;
 // it is part of the judge cache key.
+//
+// NOTE: the panel axes (efficiency?/quality? below) are OPTIONAL additions; the
+// single-judge label remains schema-valid without them, so LABEL_SCHEMA_VERSION
+// stays "1". Panel vs single mode is distinguished by the judge_prompt_hash slot
+// (getPanelPromptHash vs getJudgePromptHash), not by the schema version — so users
+// who never pass --panel are not forced into a corpus-wide re-judge.
 export const LABEL_SCHEMA_VERSION = "1";
 export const RENDER_CHAR_CAP = 12000;
+
+// Ordinal 1..5 score bounds for the efficiency/quality panel axes. Shared by the
+// judge validators and the tests so the range lives in one place.
+export const SCORE_MIN = 1;
+export const SCORE_MAX = 5;
 
 // Bump whenever the redaction rules in src/privacy.ts change. Folded into the judge
 // prompt hash (see getJudgePromptHash in judge.ts) so a redaction-logic change
@@ -147,6 +158,22 @@ export interface SkillOpportunity {
   type: SkillType;
   rationale: string;
 }
+
+// ── Panel axes (optional; populated only in --panel mode) ─────────────────────
+// An ordinal 1..5 assessment with a short rationale and bounded evidence quotes.
+// `efficiency` grades PROCESS economy (tool thrash / rework / idle), `quality`
+// grades ARTIFACT correctness/cleanliness — both independent of `outcome`.
+export interface EfficiencyAssessment {
+  score: number; // integer SCORE_MIN..SCORE_MAX
+  rationale: string;
+  evidence: string[];
+}
+export interface QualityAssessment {
+  score: number; // integer SCORE_MIN..SCORE_MAX
+  rationale: string;
+  evidence: string[];
+}
+
 export interface JudgeLabel {
   episode_id: string;
   task_type: string;
@@ -159,6 +186,10 @@ export interface JudgeLabel {
   root_cause: string;
   outcome_evidence: string[];
   skill_opportunity: SkillOpportunity;
+  // Optional panel axes — present only when judged via judgeEpisodePanel (--panel).
+  // Their absence keeps a single-judge label schema-valid (LABEL_SCHEMA_VERSION="1").
+  efficiency?: EfficiencyAssessment;
+  quality?: QualityAssessment;
 }
 
 // Metadata stamped alongside a label for cache invalidation + audit.
@@ -204,6 +235,11 @@ export interface RankedCandidate {
   low_confidence?: boolean;
   success_rate_smoothed?: number; // Laplace-smoothed (success+1)/(judged+2); robust at small N
   n_judged?: number; // denominator behind success_rate (qa_only excluded)
+  // Panel axes (transparent components, no composite) — null when no member episode
+  // was panel-judged. median over members carrying a numeric efficiency/quality score.
+  median_efficiency?: number | null;
+  median_quality?: number | null;
+  n_panel_judged?: number; // # member episodes carrying panel scores
   // Filled LATE by the business sidecar (sidecar.ts) — never influences ranking.
   business_note?: string;
 }

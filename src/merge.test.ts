@@ -8,8 +8,17 @@ import { join } from "path";
 import { sanitizeText, isExcludedSession, filterExcluded } from "./privacy.ts";
 import { converge } from "./converge.ts";
 import { extractJsonObject } from "./util.ts";
-import { openDb, migrate, getClusterMembers } from "./db.ts";
+import { openDb, migrate, getClusterMembers, upsertLabel } from "./db.ts";
 import { Database } from "bun:sqlite";
+import {
+  validateEfficiency,
+  validateQuality,
+  getPanelPromptHash,
+  getJudgePromptHash,
+  consolidate,
+  consolidateDeterministic,
+} from "./judge.ts";
+import { mine } from "./mine.ts";
 import {
   slugify,
   isDraftable,
@@ -29,7 +38,14 @@ import {
   type AuthoredStep,
   type ClusterEvidence,
 } from "./skilldraft.ts";
-import type { SessionInfo, RankedCandidate } from "./types.ts";
+import type {
+  SessionInfo,
+  RankedCandidate,
+  JudgeLabel,
+  JudgeMeta,
+  EfficiencyAssessment,
+  QualityAssessment,
+} from "./types.ts";
 
 // ── privacy ────────────────────────────────────────────────────────────────────
 test("credentials are dropped, never leaked", () => {
@@ -828,4 +844,257 @@ test("rich path redacts secrets seeded in new depth fields (examples[].good / ed
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Multi-judge panel (efficiency + quality + consolidator). All LLM-FREE — they
+// exercise validators, the cache-key discriminator, the consolidation seam (in
+// deterministic mode), mine null-safety, the migration guard, and the upsert
+// round-trip. None call Claude.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── (1) score validators ────────────────────────────────────────────────────────
+test("validateEfficiency/validateQuality accept 1..5 integers; reject 0/6/NaN/float/missing", () => {
+  expect(validateEfficiency({ score: 1, rationale: "x", evidence: [] }).score).toBe(1);
+  expect(validateEfficiency({ score: 5, rationale: "x", evidence: ["a", "b"] }).evidence).toEqual([
+    "a",
+    "b",
+  ]);
+  expect(validateQuality({ score: 3, rationale: "ok", evidence: [] }).score).toBe(3);
+
+  // Out-of-range / non-integer / non-number scores all force a retry (throw), never round.
+  for (const bad of [0, 6, -1, 3.5, NaN, Infinity, "4", null, undefined]) {
+    expect(() => validateEfficiency({ score: bad, rationale: "x", evidence: [] })).toThrow();
+    expect(() => validateQuality({ score: bad, rationale: "x", evidence: [] })).toThrow();
+  }
+  // rationale must be a string; evidence must be a string[].
+  expect(() => validateEfficiency({ score: 3, rationale: 5, evidence: [] })).toThrow();
+  expect(() => validateEfficiency({ score: 3, rationale: "x", evidence: [1, 2] })).toThrow();
+  expect(() => validateEfficiency({ score: 3, rationale: "x", evidence: "nope" })).toThrow();
+  expect(() => validateEfficiency(null)).toThrow();
+  expect(() => validateEfficiency([1, 2, 3])).toThrow();
+});
+
+// ── (2) panel hash is distinct from the single-judge hash and is stable ─────────
+test("getPanelPromptHash differs from getJudgePromptHash and is stable across calls", () => {
+  const p1 = getPanelPromptHash();
+  const p2 = getPanelPromptHash();
+  expect(p1).toBe(p2); // cached → stable
+  expect(p1).not.toBe(getJudgePromptHash()); // distinct cache-key space
+  expect(p1).toMatch(/^[0-9a-f]{64}$/); // sha256 hex
+});
+
+// ── consolidation seam fixtures ─────────────────────────────────────────────────
+function judgeLabel(over: Partial<JudgeLabel> = {}): JudgeLabel {
+  return {
+    episode_id: "e",
+    task_type: "bug fix",
+    task_difficulty: "moderate",
+    outcome: "success",
+    outcome_confidence: 0.9,
+    workflow_pattern: ["explore", "edit", "test"],
+    good_practices: [],
+    friction_points: [],
+    root_cause: "none",
+    outcome_evidence: ["user said thanks"],
+    skill_opportunity: { worth_codifying: false, type: "none", rationale: "n/a" },
+    ...over,
+  };
+}
+const eff = (score: number): EfficiencyAssessment => ({ score, rationale: "r", evidence: [] });
+const qual = (score: number): QualityAssessment => ({ score, rationale: "r", evidence: [] });
+
+// ── (3) consolidateDeterministic rules ──────────────────────────────────────────
+test("consolidateDeterministic: low quality (≤2) + success → partial + clamped confidence + assessments attached", () => {
+  const out = consolidateDeterministic({
+    rendered: "",
+    episodeId: "e1",
+    outcome: judgeLabel({ outcome: "success", outcome_confidence: 0.95 }),
+    efficiency: eff(3),
+    quality: { score: 2, rationale: "test left red", evidence: ["assert failed"] },
+  });
+  expect(out.outcome).toBe("partial");
+  expect(out.outcome_confidence).toBeLessThanOrEqual(0.6);
+  expect(out.episode_id).toBe("e1");
+  expect(out.efficiency).toEqual(eff(3));
+  expect(out.quality?.score).toBe(2);
+});
+
+test("consolidateDeterministic: quality 4 keeps the outcome and confidence", () => {
+  const out = consolidateDeterministic({
+    rendered: "",
+    episodeId: "e2",
+    outcome: judgeLabel({ outcome: "success", outcome_confidence: 0.88 }),
+    efficiency: eff(2), // poor efficiency must NOT change the outcome
+    quality: qual(4),
+  });
+  expect(out.outcome).toBe("success");
+  expect(out.outcome_confidence).toBe(0.88);
+  expect(out.efficiency?.score).toBe(2);
+  expect(out.quality?.score).toBe(4);
+});
+
+// ── (4) consolidate(mode:"deterministic") returns a schema-valid label, no network ─
+test("consolidate(deterministic) yields a schema-valid panel label without any network call", async () => {
+  const label = await consolidate(
+    {
+      rendered: "USER: do it\nASSISTANT: done",
+      episodeId: "e3",
+      outcome: judgeLabel({ episode_id: "e3" }),
+      efficiency: eff(5),
+      quality: qual(5),
+    },
+    { mode: "deterministic" }
+  );
+  expect(label.episode_id).toBe("e3");
+  expect(["success", "partial", "failed", "abandoned", "qa_only"]).toContain(label.outcome);
+  expect(label.efficiency?.score).toBe(5);
+  expect(label.quality?.score).toBe(5);
+  // base label fields survive intact
+  expect(Array.isArray(label.workflow_pattern)).toBe(true);
+  expect(label.skill_opportunity.type).toBe("none");
+});
+
+// ── (5) mine null-safety: NULL panel JSON vs panel rows ─────────────────────────
+// Insert episodes whose task_type all normalize to ONE cluster ("bug fix") so mine's
+// optional LLM grouping pass is skipped (distinctNorm.size === 1) — fully offline.
+function seedEpisode(
+  db: Database,
+  o: {
+    episodeId: string;
+    sessionId: string;
+    taskType: string;
+    outcome: string;
+    efficiency?: EfficiencyAssessment | null;
+    quality?: QualityAssessment | null;
+  }
+): void {
+  db.query(
+    `INSERT INTO episodes (episode_id, session_id, idx, n_corrections, n_interruptions, first_prompt, content_hash)
+     VALUES (?,?,?,?,?,?,?)`
+  ).run(o.episodeId, o.sessionId, 0, 0, 0, "do the thing", "h");
+  db.query(
+    `INSERT INTO episode_labels (episode_id, task_type, outcome, workflow_pattern_json,
+       skill_opportunity_json, efficiency_json, quality_json)
+     VALUES (?,?,?,?,?,?,?)`
+  ).run(
+    o.episodeId,
+    o.taskType,
+    o.outcome,
+    JSON.stringify(["explore", "edit"]),
+    JSON.stringify({ worth_codifying: false, type: "none", rationale: "" }),
+    o.efficiency ? JSON.stringify(o.efficiency) : null,
+    o.quality ? JSON.stringify(o.quality) : null
+  );
+}
+
+test("mine: panel medians computed over panel-scored members; single-mode rows ignored", async () => {
+  const db = openDb(":memory:");
+  db.exec("PRAGMA foreign_keys = OFF");
+  seedEpisode(db, {
+    episodeId: "p1",
+    sessionId: "s1",
+    taskType: "bug fix",
+    outcome: "success",
+    efficiency: eff(4),
+    quality: qual(5),
+  });
+  seedEpisode(db, {
+    episodeId: "p2",
+    sessionId: "s2",
+    taskType: "bug fix",
+    outcome: "success",
+    efficiency: null, // single-mode member in the same cluster → no panel score
+    quality: null,
+  });
+  const { candidates } = await mine(db);
+  expect(candidates.length).toBe(1);
+  const c = candidates[0]!;
+  expect(c.median_efficiency).toBe(4);
+  expect(c.median_quality).toBe(5);
+  expect(c.n_panel_judged).toBe(1);
+  db.close();
+});
+
+test("mine: all-NULL panel cluster → null medians, n_panel_judged 0, no throw", async () => {
+  const db = openDb(":memory:");
+  db.exec("PRAGMA foreign_keys = OFF");
+  seedEpisode(db, { episodeId: "n1", sessionId: "s1", taskType: "bug fix", outcome: "success" });
+  seedEpisode(db, { episodeId: "n2", sessionId: "s2", taskType: "bug fix", outcome: "partial" });
+  const { candidates } = await mine(db);
+  expect(candidates.length).toBe(1);
+  const c = candidates[0]!;
+  expect(c.median_efficiency).toBeNull();
+  expect(c.median_quality).toBeNull();
+  expect(c.n_panel_judged).toBe(0);
+  db.close();
+});
+
+// ── (6) migration guard: panel columns present + idempotent ─────────────────────
+test("migrate: a fresh DB has both panel columns; calling migrate twice is idempotent", () => {
+  const db = openDb(":memory:");
+  const colNames = () =>
+    (db.query(`PRAGMA table_info(episode_labels)`).all() as { name: string }[]).map((c) => c.name);
+  expect(colNames()).toContain("efficiency_json");
+  expect(colNames()).toContain("quality_json");
+  migrate(db); // second pass — ensureColumn must no-op, never throw
+  expect(colNames()).toContain("efficiency_json");
+  db.close();
+});
+
+test("migrate: ALTERs a pre-panel episode_labels missing the columns", () => {
+  const db = new Database(":memory:");
+  // Simulate an OLD analysis.db: episode_labels exists WITHOUT the panel columns, so
+  // schema.sql's CREATE IF NOT EXISTS is a no-op and only ensureColumn can add them.
+  db.exec(`CREATE TABLE episode_labels (episode_id TEXT PRIMARY KEY, outcome TEXT)`);
+  migrate(db);
+  const cols = (db.query(`PRAGMA table_info(episode_labels)`).all() as { name: string }[]).map(
+    (c) => c.name
+  );
+  expect(cols).toContain("efficiency_json");
+  expect(cols).toContain("quality_json");
+  migrate(db); // idempotent
+  db.close();
+});
+
+// ── (7) upsertLabel round-trip: single-mode writes NULL; panel writes JSON ───────
+function judgeMeta(): JudgeMeta {
+  return {
+    model: "claude-opus-4-8",
+    judge_prompt_hash: "h",
+    label_schema_version: "1",
+    cli_version: "x",
+    judged_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+test("upsertLabel: single-mode label stores NULL panel columns; panel label round-trips", () => {
+  const db = openDb(":memory:");
+  db.exec("PRAGMA foreign_keys = OFF");
+
+  // single-mode (no efficiency/quality) → both columns NULL
+  upsertLabel(db, judgeLabel({ episode_id: "single" }), judgeMeta());
+  const r1 = db
+    .query(`SELECT efficiency_json, quality_json FROM episode_labels WHERE episode_id=?`)
+    .get("single") as { efficiency_json: string | null; quality_json: string | null };
+  expect(r1.efficiency_json).toBeNull();
+  expect(r1.quality_json).toBeNull();
+
+  // panel label → JSON round-trips exactly
+  const panel = judgeLabel({
+    episode_id: "panel",
+    efficiency: { score: 4, rationale: "lean", evidence: ["one pass"] },
+    quality: { score: 3, rationale: "rough", evidence: [] },
+  });
+  upsertLabel(db, panel, judgeMeta());
+  const r2 = db
+    .query(`SELECT efficiency_json, quality_json FROM episode_labels WHERE episode_id=?`)
+    .get("panel") as { efficiency_json: string; quality_json: string };
+  expect(JSON.parse(r2.efficiency_json)).toEqual({
+    score: 4,
+    rationale: "lean",
+    evidence: ["one pass"],
+  });
+  expect(JSON.parse(r2.quality_json)).toEqual({ score: 3, rationale: "rough", evidence: [] });
+  db.close();
 });

@@ -26,11 +26,15 @@ import { sanitizeText } from "./privacy.ts";
 // (e.g. for deterministic tests) without code changes. Falls back gracefully.
 const USE_LLM_CLUSTERING =
   (process.env.MINE_LLM_CLUSTERING ?? "1") !== "0";
-// Default 180s, not 30s: through the ccs proxy a single grouping call's
+// Default 600s (10 min), not 30s: through the ccs proxy a single grouping call's
 // time-to-first-token alone was measured at ~112s (the model then returns in
-// ~130s total). A 30s budget SIGTERM-killed the call before any output, silently
-// collapsing every label into its own identity cluster. Override via env.
-const LLM_TIMEOUT_MS = Number(process.env.MINE_LLM_TIMEOUT_MS ?? 180000);
+// ~130s total), and on a wide corpus (~100+ distinct labels) the bigger prompt +
+// output pushed past a 180s budget — SIGTERM-killing the call before any output and
+// silently collapsing every label into its own identity cluster. A generous ceiling so
+// NO real call trips it during an e2e run; only a hung CLI does. This is a ceiling, not
+// added latency: a fast call returns immediately, and a genuine hang still falls back to
+// identity clustering (loudly). Override via env.
+const LLM_TIMEOUT_MS = Number(process.env.MINE_LLM_TIMEOUT_MS ?? 600000);
 // Pin a model for the grouping call. The task is light synonym-merging, but its
 // output defines every cluster boundary in the report, so favor Sonnet's headroom
 // over Haiku at one cheap call per mine. Override via MINE_LLM_MODEL (e.g.
@@ -59,6 +63,9 @@ interface EpisodeRow {
   outcome: string | null;
   workflow_pattern_json: string | null;
   skill_opportunity_json: string | null;
+  // panel axes (null in single-mode or when unjudged)
+  efficiency_json: string | null;
+  quality_json: string | null;
 }
 
 // ── String normalization + synonym canonicalization ───────────────────────────
@@ -305,7 +312,9 @@ function loadEpisodes(db: Database): EpisodeRow[] {
          l.task_type            AS task_type,
          l.outcome              AS outcome,
          l.workflow_pattern_json AS workflow_pattern_json,
-         l.skill_opportunity_json AS skill_opportunity_json
+         l.skill_opportunity_json AS skill_opportunity_json,
+         l.efficiency_json      AS efficiency_json,
+         l.quality_json         AS quality_json
        FROM episodes e
        LEFT JOIN episode_features f ON f.episode_id = e.episode_id
        LEFT JOIN episode_labels   l ON l.episode_id = e.episode_id`
@@ -540,6 +549,24 @@ export async function mine(
       .filter((d): d is number => typeof d === "number" && !isNaN(d));
     const est_effort = Math.round(median(durations) * frequency);
 
+    // Panel axes — median over the SUBSET of members carrying a numeric score (panel
+    // mode only). Null-safe: single-mode rows have NULL panel JSON → safeParseObject
+    // returns {} → no score pushed. null medians + 0 count when no member was paneled.
+    const effScores: number[] = [];
+    const qualScores: number[] = [];
+    let n_panel_judged = 0;
+    for (const r of rows) {
+      const eff = safeParseObject(r.efficiency_json);
+      const qual = safeParseObject(r.quality_json);
+      const hasEff = typeof eff.score === "number" && !Number.isNaN(eff.score);
+      const hasQual = typeof qual.score === "number" && !Number.isNaN(qual.score);
+      if (hasEff) effScores.push(eff.score);
+      if (hasQual) qualScores.push(qual.score);
+      if (hasEff || hasQual) n_panel_judged++;
+    }
+    const median_efficiency = effScores.length ? median(effScores) : null;
+    const median_quality = qualScores.length ? median(qualScores) : null;
+
     const recommended_intervention = recommendIntervention(
       rows,
       judgedRows.length,
@@ -567,6 +594,9 @@ export async function mine(
       low_confidence,
       success_rate_smoothed: Number(success_rate_smoothed.toFixed(4)),
       n_judged: judgedRows.length,
+      median_efficiency,
+      median_quality,
+      n_panel_judged,
     });
   }
 
@@ -599,6 +629,8 @@ if (import.meta.main) {
       "smTH%",
       "n_jd",
       "fric",
+      "eff",
+      "qual",
       "stable",
       "conf",
       "rec",
@@ -615,6 +647,9 @@ if (import.meta.main) {
           ((c.success_rate_smoothed ?? 0) * 100).toFixed(0) + "%",
           c.n_judged ?? 0,
           c.median_friction,
+          // panel medians: "-" when no member was panel-judged (single-mode corpus).
+          c.median_efficiency ?? "-",
+          c.median_quality ?? "-",
           c.has_stable_pattern ? "y" : "n",
           c.low_confidence ? "LOW" : "ok",
           c.recommended_intervention,
