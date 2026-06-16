@@ -219,10 +219,10 @@
   </div>
 
   <div class="stats">
-    <div class="stat"><div class="n">111</div><div class="l" data-en="real sessions analyzed" data-vi="phiên thật được phân tích"></div></div>
-    <div class="stat"><div class="n">695</div><div class="l" data-en="human turns extracted" data-vi="lượt người dùng trích ra"></div></div>
-    <div class="stat"><div class="n">329</div><div class="l" data-en="task episodes (~2.1 turns each)" data-vi="episode tác vụ (~2.1 lượt/ep)"></div></div>
-    <div class="stat"><div class="n">14</div><div class="l" data-en="source files in the contract" data-vi="tệp mã trong hợp đồng chung"></div></div>
+    <div class="stat"><div class="n">124</div><div class="l" data-en="real sessions analyzed" data-vi="phiên thật được phân tích"></div></div>
+    <div class="stat"><div class="n">721</div><div class="l" data-en="human turns extracted" data-vi="lượt người dùng trích ra"></div></div>
+    <div class="stat"><div class="n">321</div><div class="l" data-en="task episodes (~2.2 turns each)" data-vi="episode tác vụ (~2.2 lượt/ep)"></div></div>
+    <div class="stat"><div class="n">271</div><div class="l" data-en="episodes judged by the LLM (of 321)" data-vi="episode đã chấm bởi LLM (trên 321)"></div></div>
   </div>
 
   <!-- ===================== PIPELINE FLOW ===================== -->
@@ -245,8 +245,8 @@
       <div class="flow-row">
         <div class="node blue">
           <div class="tag">1 · <span data-en="discover" data-vi="khám phá"></span></div>
-          <div class="name"><span data-en="Find real sessions" data-vi="Tìm phiên thật"></span><span class="file">discover.ts</span></div>
-          <div class="desc" data-en="Enumerate top-level session logs; exclude subagent forks, agent-mode/observer buckets, and the miner's own project." data-vi="Liệt kê log phiên cấp cao nhất; loại trừ fork subagent, thư mục agent-mode/observer, và chính dự án miner."></div>
+          <div class="name"><span data-en="Find real sessions" data-vi="Tìm phiên thật"></span><span class="file">discover.ts + privacy.ts</span></div>
+          <div class="desc" data-en="Enumerate top-level session logs; exclude subagent forks, agent-mode/observer buckets, and the miner's own project. Worker opt-out sessions are then dropped (privacy.ts) BEFORE any content is read." data-vi="Liệt kê log phiên cấp cao nhất; loại trừ fork subagent, thư mục agent-mode/observer, và chính dự án miner. Phiên người lao động đã opt-out bị loại (privacy.ts) TRƯỚC khi đọc bất kỳ nội dung nào."></div>
         </div>
         <div class="arrow">→</div>
         <div class="node blue">
@@ -279,8 +279,8 @@
         <div class="arrow">→</div>
         <div class="node blue">
           <div class="tag">6 · <span data-en="render" data-vi="kết xuất"></span></div>
-          <div class="name"><span data-en="Compact view for judge" data-vi="Bản gọn cho bộ chấm"></span><span class="file">render.ts</span></div>
-          <div class="desc" data-en="Build a ≤12k-char view: keep prompts, assistant text, tool names+inputs; DROP tool outputs. Middle-elide; append signals." data-vi="Dựng bản ≤12k ký tự: giữ prompt, văn bản assistant, tên+input tool; BỎ output tool. Lược phần giữa; nối khối tín hiệu."></div>
+          <div class="name"><span data-en="Compact view for judge" data-vi="Bản gọn cho bộ chấm"></span><span class="file">render.ts + privacy.ts</span></div>
+          <div class="desc" data-en="Build a ≤12k-char view: keep prompts, assistant text, tool names+inputs; DROP tool outputs. Middle-elide; append signals. Then the PRIVACY GATE redacts (credentials DROPPED, PII MASKED) before text leaves the machine." data-vi="Dựng bản ≤12k ký tự: giữ prompt, văn bản assistant, tên+input tool; BỎ output tool. Lược phần giữa; nối khối tín hiệu. Rồi CỔNG RIÊNG TƯ khử nhạy (credential bị BỎ, PII bị CHE) trước khi text rời máy."></div>
         </div>
       </div>
 
@@ -289,8 +289,8 @@
       <div class="flow-row">
         <div class="node violet">
           <div class="tag">7 · <span data-en="judge" data-vi="chấm điểm"></span></div>
-          <div class="name">⚖️ <span data-en="LLM judge" data-vi="Bộ chấm LLM"></span><span class="file">judge.ts + prompts/judge.md</span></div>
-          <div class="desc" data-en="Call claude -p with a bias-anchored rubric; validate the JSON label, retry once. Cache-keyed on content+prompt+schema+model+cli." data-vi="Gọi claude -p với rubric chống thiên kiến; kiểm tra nhãn JSON, thử lại 1 lần. Khóa cache theo nội dung+prompt+schema+model+cli."></div>
+          <div class="name">⚖️ <span data-en="LLM judge" data-vi="Bộ chấm LLM"></span><span class="file">judge.ts + prompts/judge*.md</span></div>
+          <div class="desc" data-en="Call claude -p (model claude-opus-4-8) with a bias-anchored rubric; validate the JSON label, retry once. Cache-keyed on content+prompt+schema+model+cli. Optional --panel runs 4 serial judges: outcome + efficiency + quality + consolidator." data-vi="Gọi claude -p (model claude-opus-4-8) với rubric chống thiên kiến; kiểm tra nhãn JSON, thử lại 1 lần. Khóa cache theo nội dung+prompt+schema+model+cli. Tùy chọn --panel chạy 4 judge nối tiếp: outcome + efficiency + quality + consolidator."></div>
         </div>
         <div class="arrow">→</div>
         <div class="node slate">
@@ -331,8 +331,13 @@
     <div class="orch">
       <span class="pill">🎛️ pipeline.ts</span>
       <span style="color:var(--muted);font-size:13px"
-        data-en="<b style='color:var(--ink)'>The orchestrator</b> wraps stages 1→8: resumable, idempotent, with a cost-confirmation gate, a --max-cost ceiling, a 5-error circuit breaker, and per-session try/catch so one bad session skips instead of aborting the run. Add <code>--mine</code> to also run 9b+10 at the end."
-        data-vi="<b style='color:var(--ink)'>Bộ điều phối</b> bao các bước 1→8: tiếp tục lại được, bất biến, có cổng xác nhận chi phí, trần --max-cost, cầu dao ngắt sau 5 lỗi, và try/catch theo từng phiên để một phiên hỏng chỉ bị bỏ qua chứ không làm hỏng cả lượt chạy. Thêm <code>--mine</code> để chạy luôn 9b+10 ở cuối."></span>
+        data-en="<b style='color:var(--ink)'>The orchestrator</b> wraps stages 1→8: resumable, idempotent, with the default-on privacy gate, a cost-confirmation gate, a --max-cost ceiling, a 5-error circuit breaker, and per-session try/catch so one bad session skips instead of aborting the run. Every LLM call routes through <code>src/runner.ts</code> (<code>--runner ccs|claude</code>, default ccs/<code>my-api</code>). Add <code>--mine</code> to also run 9b+10, or <code>--panel</code> for the 4-judge panel."
+        data-vi="<b style='color:var(--ink)'>Bộ điều phối</b> bao các bước 1→8: tiếp tục lại được, bất biến, có cổng riêng tư bật sẵn, cổng xác nhận chi phí, trần --max-cost, cầu dao ngắt sau 5 lỗi, và try/catch theo từng phiên để một phiên hỏng chỉ bị bỏ qua chứ không làm hỏng cả lượt chạy. Mọi lệnh gọi LLM đi qua <code>src/runner.ts</code> (<code>--runner ccs|claude</code>, mặc định ccs/<code>my-api</code>). Thêm <code>--mine</code> để chạy luôn 9b+10, hoặc <code>--panel</code> cho hội đồng 4 judge."></span>
+    </div>
+
+    <div class="note" style="margin-top:14px">
+      🧭 <b data-en="After the handoff:" data-vi="Sau bàn giao:"></b>
+      <span data-en="two optional, CLI-only stages live past <code>candidates.json</code> and are NOT in the default pipeline — <code>bun run draft</code> (turns a GO candidate into a complete skill under <code>out/skill_drafts/&lt;slug&gt;/{skill,audit}/</code>; opt-in, gated, never auto-published) and <code>bun run converge</code> (merges per-machine candidate exports into cross-validated org-wide workflows)." data-vi="hai giai đoạn tùy chọn, chỉ-CLI nằm sau <code>candidates.json</code> và KHÔNG thuộc pipeline mặc định — <code>bun run draft</code> (biến candidate GO thành skill hoàn chỉnh tại <code>out/skill_drafts/&lt;slug&gt;/{skill,audit}/</code>; opt-in, có cổng, không tự publish) và <code>bun run converge</code> (gộp candidate nhiều máy thành workflow cross-validated toàn tổ chức)."></span>
     </div>
   </section>
 
@@ -350,27 +355,27 @@
       </div>
       <div class="fdrop">▼ <span class="mono" data-en="discover" data-vi="discover"></span></div>
       <div class="fstep" style="width:84%;background:linear-gradient(135deg,#2d76e0,#4f9bf5)">
-        <div class="ft">111 <span data-en="Sessions" data-vi="Phiên"></span></div>
-        <div class="fm" data-en="real coding sessions (forks & meta buckets excluded)" data-vi="phiên lập trình thật (loại fork & thư mục meta)"></div>
+        <div class="ft">124 <span data-en="Sessions" data-vi="Phiên"></span></div>
+        <div class="fm" data-en="real coding sessions (forks, meta buckets & opt-outs excluded)" data-vi="phiên lập trình thật (loại fork, thư mục meta & opt-out)"></div>
       </div>
       <div class="fdrop">▼ <span class="mono">classify</span></div>
       <div class="fstep" style="width:72%;background:linear-gradient(135deg,#5a7be0,#7c9af0)">
-        <div class="ft">695 <span data-en="Human turns" data-vi="Lượt người dùng"></span></div>
+        <div class="ft">721 <span data-en="Human turns" data-vi="Lượt người dùng"></span></div>
         <div class="fm" data-en="each tagged with one of 6 roles" data-vi="mỗi lượt gắn 1 trong 6 vai trò"></div>
       </div>
       <div class="fdrop">▼ <span class="mono">segment</span></div>
       <div class="fstep" style="width:60%;background:linear-gradient(135deg,#8b6bf0,#a884ff)">
-        <div class="ft">329 <span data-en="Episodes" data-vi="Episode"></span></div>
+        <div class="ft">321 <span data-en="Episodes" data-vi="Episode"></span></div>
         <div class="fm" data-en="THE unit of analysis — one task attempt + its rework" data-vi="ĐƠN VỊ phân tích — một lần làm tác vụ + phần sửa lại"></div>
       </div>
       <div class="fdrop">▼ <span class="mono">signals · render · judge</span></div>
       <div class="fstep" style="width:48%;background:linear-gradient(135deg,#a361e0,#c08cff)">
-        <div class="ft" data-en="Judged labels" data-vi="Nhãn đã chấm"></div>
-        <div class="fm" data-en="outcome · difficulty · workflow_pattern · friction · skill_opportunity" data-vi="kết quả · độ khó · workflow_pattern · ma sát · skill_opportunity"></div>
+        <div class="ft">271 <span data-en="Judged labels" data-vi="Nhãn đã chấm"></span></div>
+        <div class="fm" data-en="outcome · difficulty · workflow_pattern · friction · skill_opportunity (+ efficiency/quality in --panel)" data-vi="kết quả · độ khó · workflow_pattern · ma sát · skill_opportunity (+ efficiency/quality khi --panel)"></div>
       </div>
       <div class="fdrop">▼ <span class="mono">mine</span></div>
       <div class="fstep" style="width:36%;background:linear-gradient(135deg,#2ea043,#3fb950)">
-        <div class="ft" data-en="Task clusters" data-vi="Cụm tác vụ"></div>
+        <div class="ft">117 <span data-en="Task clusters" data-vi="Cụm tác vụ"></span></div>
         <div class="fm" data-en="ranked by frequency, success rate, friction, risk" data-vi="xếp hạng theo tần suất, tỉ lệ thành công, ma sát, rủi ro"></div>
       </div>
       <div class="fdrop">▼ <span class="mono">report</span></div>
@@ -385,8 +390,8 @@
   <section id="stages">
     <h2><span class="num">3</span><span data-en="What each file does" data-vi="Mỗi tệp làm gì"></span></h2>
     <p class="sec-sub"
-       data-en="The 4 build agents owned disjoint slices of one frozen contract (types.ts · util.ts · schema.sql · db.ts · DATA_FORMAT.md). Below: the stage files in pipeline order, then the shared contract."
-       data-vi="4 agent xây dựng phụ trách các phần tách rời của một hợp đồng đông cứng (types.ts · util.ts · schema.sql · db.ts · DATA_FORMAT.md). Dưới đây: các tệp theo thứ tự pipeline, rồi đến hợp đồng dùng chung."></p>
+       data-en="Every module shares one frozen contract (types.ts · util.ts · schema.sql · db.ts · DATA_FORMAT.md). Below: the core stage files in pipeline order, the shared contract, then the cross-cutting & post-handoff modules (privacy, runner, sidecar, converge, skilldraft) and the $0 verification tools."
+       data-vi="Mọi module dùng chung một hợp đồng đông cứng (types.ts · util.ts · schema.sql · db.ts · DATA_FORMAT.md). Dưới đây: các tệp lõi theo thứ tự pipeline, hợp đồng dùng chung, rồi các module xuyên suốt & sau-bàn-giao (privacy, runner, sidecar, converge, skilldraft) và công cụ kiểm tra $0."></p>
 
     <div class="grid">
       <!-- discover -->
@@ -473,6 +478,48 @@
         <p data-en="<code>types.ts</code> is the single source of boundary types (every module imports from here). <code>util.ts</code> holds shared helpers — <code>isHumanTurn()</code>, <code>extractUserText()</code>, <code>countImages()</code>, <code>readEvents()</code>, <code>sha256()</code>. <code>DATA_FORMAT.md</code> is the empirically-verified ground truth for parsing the raw transcripts." data-vi="<code>types.ts</code> là nguồn duy nhất cho các kiểu ở ranh giới (mọi module import từ đây). <code>util.ts</code> chứa hàm dùng chung — <code>isHumanTurn()</code>, <code>extractUserText()</code>, <code>countImages()</code>, <code>readEvents()</code>, <code>sha256()</code>. <code>DATA_FORMAT.md</code> là sự thật nền tảng đã kiểm chứng thực nghiệm để phân tích transcript thô."></p>
         <div class="io"><span class="chip" data-en="imported by everything" data-vi="mọi nơi import"></span></div>
       </div>
+      <!-- privacy -->
+      <div class="card">
+        <div class="dotline" style="background:var(--pink)"></div>
+        <h3>🔒 privacy<span class="file">src/privacy.ts</span></h3>
+        <p data-en="The default-on privacy gate. Drops worker opt-out sessions BEFORE any content is read, then redacts every LLM egress — credentials DROPPED, PII MASKED — right after the char-cap, before text leaves the machine. The privacy-rules version folds into the judge cache key; each run writes <code>out/state/audit.json</code>." data-vi="Cổng riêng tư bật sẵn. Loại phiên người lao động đã opt-out TRƯỚC khi đọc nội dung, rồi khử nhạy mọi egress LLM — credential bị BỎ, PII bị CHE — ngay sau char-cap, trước khi text rời máy. Phiên bản luật riêng tư gộp vào khóa cache; mỗi lượt ghi <code>out/state/audit.json</code>."></p>
+        <div class="io"><span class="chip" data-en="sessions · rendered text" data-vi="phiên · văn bản kết xuất"></span><span class="to">→</span><span class="chip" data-en="redacted + audit" data-vi="đã khử nhạy + audit"></span></div>
+      </div>
+      <!-- runner -->
+      <div class="card">
+        <div class="dotline" style="background:var(--slate)"></div>
+        <h3>🔀 runner<span class="file">src/runner.ts</span></h3>
+        <p data-en="The only LLM-routing layer. <code>runClaudeText()</code> wraps the headless <code>claude -p</code> call (spawn + runner env + timeout + JSON-envelope unwrap), shared by classify, mine, and sidecar. <code>--runner ccs</code> merges a ccs profile's <code>ANTHROPIC_*</code> env; <code>--runner claude</code> uses the ambient login." data-vi="Lớp định tuyến LLM duy nhất. <code>runClaudeText()</code> bọc lệnh headless <code>claude -p</code> (spawn + env runner + timeout + bóc vỏ JSON), dùng chung bởi classify, mine, sidecar. <code>--runner ccs</code> nạp env <code>ANTHROPIC_*</code> của profile ccs; <code>--runner claude</code> dùng login sẵn có."></p>
+        <div class="io"><span class="chip" data-en="prompt" data-vi="prompt"></span><span class="to">→</span><span class="chip">.result text</span></div>
+      </div>
+      <!-- sidecar -->
+      <div class="card">
+        <div class="dotline" style="background:var(--green)"></div>
+        <h3>💼 sidecar<span class="file">src/sidecar.ts</span></h3>
+        <p data-en="The business sidecar, joined LATE. After mining ranks the clusters, it adds a one-sentence <code>business_note</code> per candidate (<code>--business</code>). Judge &amp; mine stay business-BLIND so the evaluation is independent. Never throws; falls back to deterministic notes." data-vi="Sidecar nghiệp vụ, ghép MUỘN. Sau khi mine xếp hạng cụm, nó thêm một câu <code>business_note</code> cho mỗi candidate (<code>--business</code>). Judge &amp; mine vẫn MÙ nghiệp vụ để đánh giá độc lập. Không bao giờ ném lỗi; tự lùi về note tất định."></p>
+        <div class="io"><span class="chip">RankedCandidate[]</span><span class="to">→</span><span class="chip">+ business_note</span></div>
+      </div>
+      <!-- converge -->
+      <div class="card">
+        <div class="dotline" style="background:var(--green)"></div>
+        <h3>🌐 converge<span class="file">src/converge.ts</span></h3>
+        <p data-en="Cross-machine convergence (CLI-only, not in the default pipeline). Merges per-machine <code>out/state/candidates_*.json</code> by label+pattern similarity; a workflow seen on ≥2 machines is <b>cross-validated</b>. Operates on ranked candidates only — never raw transcripts." data-vi="Hội tụ nhiều máy (chỉ-CLI, không thuộc pipeline mặc định). Gộp <code>out/state/candidates_*.json</code> từng máy theo độ tương đồng nhãn+pattern; workflow xuất hiện ≥2 máy là <b>cross-validated</b>. Chỉ xử lý candidate đã xếp hạng — không bao giờ transcript thô."></p>
+        <div class="io"><span class="chip">candidates_&lt;machine&gt;.json</span><span class="to">→</span><span class="chip">convergence.md/json</span></div>
+      </div>
+      <!-- skilldraft -->
+      <div class="card">
+        <div class="dotline" style="background:var(--violet)"></div>
+        <h3>📝 draft<span class="file">src/skilldraft.ts</span></h3>
+        <p data-en="Post-handoff skill drafting (opt-in, gated, CLI-only). Turns a GO candidate into a COMPLETE skill: a publishable <code>skill/</code> (SKILL.md + per-stage <code>references/</code> + <code>scripts/</code>) and a never-published <code>audit/</code> (evidence.md, code-rendered observed.md, golden_cases.json, meta.json, bun-test self-eval). The LLM authors the workflow; <code>--no-llm</code> gives a deterministic draft." data-vi="Soạn skill sau bàn giao (opt-in, có cổng, chỉ-CLI). Biến candidate GO thành skill HOÀN CHỈNH: <code>skill/</code> publish được (SKILL.md + <code>references/</code> theo từng bước + <code>scripts/</code>) và <code>audit/</code> không publish (evidence.md, observed.md render bằng code, golden_cases.json, meta.json, self-eval bun-test). LLM tự soạn workflow; <code>--no-llm</code> cho bản tất định."></p>
+        <div class="io"><span class="chip" data-en="candidates.json (GO)" data-vi="candidates.json (GO)"></span><span class="to">→</span><span class="chip">skill_drafts/&lt;slug&gt;/</span></div>
+      </div>
+      <!-- verify tools -->
+      <div class="card">
+        <div class="dotline" style="background:var(--blue)"></div>
+        <h3>🧰 check + dump-render<span class="file">src/check.ts · src/dump-render.ts</span></h3>
+        <p data-en="$0 verification, no LLM. <code>check.ts</code> asserts structural DB invariants and exits non-zero on failure — the primary smoke test. <code>dump-render.ts</code> prints exactly the text the judge will read for any episode, so you can eyeball the render without spending a cent." data-vi="Kiểm tra $0, không LLM. <code>check.ts</code> khẳng định các bất biến cấu trúc của DB và thoát khác 0 nếu lỗi — smoke test chính. <code>dump-render.ts</code> in đúng văn bản judge sẽ đọc cho bất kỳ episode nào, để bạn xem trước render mà không tốn xu nào."></p>
+        <div class="io"><span class="chip">analysis.db</span><span class="to">→</span><span class="chip" data-en="pass/fail · render" data-vi="pass/fail · render"></span></div>
+      </div>
     </div>
   </section>
 
@@ -511,6 +558,8 @@
           <div class="row"><span class="f">root_cause</span><span class="d" data-en="one sentence: deepest cause of friction" data-vi="một câu: nguyên nhân sâu nhất của ma sát"></span></div>
           <div class="row"><span class="f">outcome_evidence</span><span class="d" data-en="string[] — the user-observable signals" data-vi="string[] — tín hiệu quan sát được"></span></div>
           <div class="row"><span class="f">skill_opportunity</span><span class="d" data-en="{worth_codifying, type: skill/script/sop/none, rationale}" data-vi="{worth_codifying, type: skill/script/sop/none, rationale}"></span></div>
+          <div class="row"><span class="f">efficiency?</span><span class="ty" data-en="--panel only · {score 1–5, rationale, evidence[]}" data-vi="chỉ khi --panel · {score 1–5, rationale, evidence[]}"></span></div>
+          <div class="row"><span class="f">quality?</span><span class="ty" data-en="--panel only · {score 1–5, rationale, evidence[]}" data-vi="chỉ khi --panel · {score 1–5, rationale, evidence[]}"></span></div>
         </div>
       </div>
     </div>
@@ -531,14 +580,26 @@
       </div>
       <p style="margin:12px 0 0;color:var(--muted);font-size:12.5px" data-en="The rubric tells the judge to treat strong signals as strong inputs but weak signals (api_errors, a lone correction, no PR) as <i>not</i> failure — they're usually transient infra or normal iteration." data-vi="Rubric dặn bộ chấm coi tín hiệu mạnh là đầu vào mạnh, nhưng tín hiệu yếu (api_errors, một lần sửa lẻ, không có PR) <i>không phải</i> là thất bại — chúng thường là hạ tầng tạm thời hoặc lặp lại bình thường."></p>
     </div>
+
+    <div class="panel" style="margin-top:18px">
+      <h3 style="margin:0 0 8px;font-size:15px" data-en="Optional: the multi-judge panel (--panel)" data-vi="Tùy chọn: hội đồng nhiều bộ chấm (--panel)"></h3>
+      <p style="margin:0 0 8px;color:var(--muted);font-size:13px" data-en="With <code>--panel</code>, each episode is scored by 4 serial calls instead of 1 — at ~4× cost & latency. A distinct panel prompt-hash keeps panel labels from colliding with single-judge labels in the cache." data-vi="Với <code>--panel</code>, mỗi episode được chấm bởi 4 lần gọi nối tiếp thay vì 1 — chi phí & độ trễ ~4×. Một prompt-hash riêng cho panel giữ cho nhãn panel không đụng nhãn judge đơn trong cache."></p>
+      <div class="sigwrap">
+        <span class="sig"><span class="dir neu">1</span>outcome <span class="w">judge.md</span></span>
+        <span class="sig"><span class="dir pos">2</span>efficiency 1–5 <span class="w">judge_efficiency.md</span></span>
+        <span class="sig"><span class="dir pos">3</span>quality 1–5 <span class="w">judge_quality.md</span></span>
+        <span class="sig"><span class="dir neu">4</span>consolidator <span class="w">judge_consolidator.md</span></span>
+      </div>
+      <p style="margin:12px 0 0;color:var(--muted);font-size:12.5px" data-en="The consolidator reconciles the three verdicts into the final label and can downgrade a 'success' whose quality score is low — its efficiency/quality scores then flow into mine's per-cluster medians." data-vi="Bộ hợp nhất dung hòa ba phán quyết thành nhãn cuối và có thể hạ cấp một 'success' có điểm chất lượng thấp — điểm efficiency/quality sau đó chảy vào trung vị theo cụm ở bước mine."></p>
+    </div>
   </section>
 
   <!-- ===================== SAFETY ===================== -->
   <section id="safety">
     <h2><span class="num">5</span><span data-en="Trust & cost safety" data-vi="Tin cậy & an toàn chi phí"></span></h2>
     <p class="sec-sub"
-       data-en="The judge makes real metered calls (~$0.40 each; a full 329-episode run ≈ $130, serial, 1–3 hrs). These guardrails keep a broken CLI or a typo from burning the budget, and keep the report honest about a small corpus."
-       data-vi="Bộ chấm gọi thật có tính phí (~$0.40 mỗi lần; chạy đủ 329 episode ≈ $130, tuần tự, 1–3 giờ). Các lan can này ngăn CLI hỏng hoặc lỗi gõ làm cháy ngân sách, và giữ báo cáo trung thực về một tập dữ liệu nhỏ."></p>
+       data-en="The judge makes real metered calls (~$0.40 each, ~4× under --panel; a full 321-episode run ≈ $130, serial, 1–3 hrs). These guardrails keep a broken CLI or a typo from burning the budget, and keep the report honest about a small corpus."
+       data-vi="Bộ chấm gọi thật có tính phí (~$0.40 mỗi lần, ~4× khi --panel; chạy đủ 321 episode ≈ $130, tuần tự, 1–3 giờ). Các lan can này ngăn CLI hỏng hoặc lỗi gõ làm cháy ngân sách, và giữ báo cáo trung thực về một tập dữ liệu nhỏ."></p>
 
     <div class="safe-grid">
       <div class="safe"><div class="ic">💵</div><h4 data-en="Cost-confirmation gate" data-vi="Cổng xác nhận chi phí"></h4><p data-en="A fresh run estimated above ~$5 prompts for confirmation and fails CLOSED on a non-TTY. Pass --yes to skip." data-vi="Lượt chạy mới ước tính trên ~$5 sẽ hỏi xác nhận và mặc định DỪNG nếu không có TTY. Dùng --yes để bỏ qua."></p></div>
@@ -571,7 +632,7 @@
       <div class="tbl"><div class="h">episode_evidence</div><ul>
         <li><b>signal</b>, direction, weight</li><li>value, reason</li><li><i>(many rows per episode)</i></li></ul></div>
       <div class="tbl"><div class="h">episode_labels <span class="pk">PK episode_id</span></div><ul>
-        <li><b>outcome</b>, task_difficulty</li><li>workflow_pattern_json</li><li>friction_points_json, root_cause</li><li>skill_opportunity_json</li><li>model, judge_prompt_hash, cli_version</li></ul></div>
+        <li><b>outcome</b>, task_difficulty</li><li>workflow_pattern_json</li><li>friction_points_json, root_cause</li><li>skill_opportunity_json</li><li>efficiency_json, quality_json <i>(--panel)</i></li><li>model, judge_prompt_hash, cli_version</li></ul></div>
       <div class="tbl"><div class="h">calibration <span class="pk">PK episode_id</span></div><ul>
         <li>stratum, <b>human_outcome</b></li><li>agrees, human_notes</li><li>checked_at</li></ul></div>
       <div class="tbl"><div class="h">task_clusters <span class="pk">PK cluster_id</span></div><ul>
@@ -607,6 +668,17 @@
         <tr><td class="f">src/types.ts</td><td><span class="stg" style="background:var(--pink-bg);color:var(--pink)">contract</span></td><td data-en="The single source of truth for all boundary types + constants." data-vi="Nguồn sự thật duy nhất cho mọi kiểu ranh giới + hằng số."></td></tr>
         <tr><td class="f">src/util.ts</td><td><span class="stg" style="background:var(--pink-bg);color:var(--pink)">contract</span></td><td data-en="Shared helpers: isHumanTurn, extractUserText, countImages, readEvents, sha256, median." data-vi="Hàm dùng chung: isHumanTurn, extractUserText, countImages, readEvents, sha256, median."></td></tr>
         <tr><td class="f">DATA_FORMAT.md</td><td><span class="stg" style="background:var(--pink-bg);color:var(--pink)">contract</span></td><td data-en="Empirically-verified ground truth for the raw .jsonl transcript format." data-vi="Sự thật nền tảng đã kiểm chứng cho định dạng transcript .jsonl thô."></td></tr>
+        <tr><td class="f">src/privacy.ts</td><td><span class="stg" style="background:var(--pink-bg);color:var(--pink)">privacy</span></td><td data-en="Default-on privacy gate: worker opt-out filter + credential DROP / PII MASK on every LLM egress + audit." data-vi="Cổng riêng tư bật sẵn: lọc opt-out + BỎ credential / CHE PII trên mọi egress LLM + audit."></td></tr>
+        <tr><td class="f">src/runner.ts</td><td><span class="stg" style="background:var(--slate-bg);color:var(--slate)">routing</span></td><td data-en="The only LLM-routing layer: runClaudeText() headless claude -p wrapper; --runner ccs|claude env." data-vi="Lớp định tuyến LLM duy nhất: bọc headless claude -p runClaudeText(); env --runner ccs|claude."></td></tr>
+        <tr><td class="f">prompts/judge_efficiency.md</td><td><span class="stg" style="background:var(--violet-bg);color:var(--violet)">prompt</span></td><td data-en="--panel axis: efficiency score 1–5 + rationale." data-vi="Trục --panel: điểm efficiency 1–5 + lý do."></td></tr>
+        <tr><td class="f">prompts/judge_quality.md</td><td><span class="stg" style="background:var(--violet-bg);color:var(--violet)">prompt</span></td><td data-en="--panel axis: quality score 1–5 + rationale." data-vi="Trục --panel: điểm quality 1–5 + lý do."></td></tr>
+        <tr><td class="f">prompts/judge_consolidator.md</td><td><span class="stg" style="background:var(--violet-bg);color:var(--violet)">prompt</span></td><td data-en="--panel consolidator: reconcile outcome + efficiency + quality into the final label." data-vi="Bộ hợp nhất --panel: dung hòa outcome + efficiency + quality thành nhãn cuối."></td></tr>
+        <tr><td class="f">src/check.ts</td><td><span class="stg" style="background:var(--slate-bg);color:var(--slate)">verify</span></td><td data-en="$0 structural DB-invariant smoke test; exits non-zero on failure." data-vi="Smoke test bất biến DB $0; thoát khác 0 khi lỗi."></td></tr>
+        <tr><td class="f">src/dump-render.ts</td><td><span class="stg" style="background:var(--slate-bg);color:var(--slate)">verify</span></td><td data-en="$0 inspection: print exactly what the judge will read for an episode." data-vi="Kiểm tra $0: in đúng những gì judge sẽ đọc cho một episode."></td></tr>
+        <tr><td class="f">src/sidecar.ts</td><td><span class="stg" style="background:var(--green-bg);color:var(--green)">business</span></td><td data-en="Late-join business sidecar: one business_note per ranked candidate (--business). Judge/mine stay business-blind." data-vi="Sidecar nghiệp vụ ghép muộn: một business_note cho mỗi candidate (--business). Judge/mine mù nghiệp vụ."></td></tr>
+        <tr><td class="f">src/converge.ts</td><td><span class="stg" style="background:var(--green-bg);color:var(--green)">meta · CLI</span></td><td data-en="Cross-machine convergence: merge per-machine candidate exports → cross-validated workflows." data-vi="Hội tụ nhiều máy: gộp candidate từng máy → workflow cross-validated."></td></tr>
+        <tr><td class="f">src/skilldraft.ts</td><td><span class="stg" style="background:var(--violet-bg);color:var(--violet)">post-handoff · CLI</span></td><td data-en="Opt-in, gated: GO candidate → complete skill under out/skill_drafts/&lt;slug&gt;/{skill,audit}/ (LLM or --no-llm)." data-vi="Opt-in, có cổng: candidate GO → skill hoàn chỉnh tại out/skill_drafts/&lt;slug&gt;/{skill,audit}/ (LLM hoặc --no-llm)."></td></tr>
+        <tr><td class="f">src/merge.test.ts</td><td><span class="stg" style="background:var(--pink-bg);color:var(--pink)">tests</span></td><td data-en="bun test src — pure-logic tests for privacy, convergence, and the skill-draft gate." data-vi="bun test src — test logic thuần cho privacy, convergence, và cổng skill-draft."></td></tr>
       </tbody>
     </table>
 
@@ -614,7 +686,9 @@
       <b data-en="How to run it:" data-vi="Cách chạy:"></b>
       <span data-en="Smoke test (no LLM): " data-vi="Chạy thử (không LLM): "></span><code>bun run pipeline.ts --project auto-skills --limit 3 --no-judge</code> ·
       <span data-en="Full resumable run + report: " data-vi="Chạy đầy đủ + báo cáo: "></span><code>bun run pipeline.ts --mine</code> ·
-      <span data-en="Trust gate: " data-vi="Cổng tin cậy: "></span><code>bun run src/calibrate.ts</code>
+      <span data-en="Trust gate: " data-vi="Cổng tin cậy: "></span><code>bun run calibrate</code> ·
+      <span data-en="Post-handoff (opt-in): " data-vi="Sau bàn giao (opt-in): "></span><code>bun run draft --yes</code> · <code>bun run converge</code> ·
+      <span data-en="Tests: " data-vi="Kiểm thử: "></span><code>bun test src</code>
     </div>
   </section>
 

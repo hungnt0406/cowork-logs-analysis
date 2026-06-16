@@ -67,7 +67,8 @@
 
   <h1>Cowork Workflow Miner — Kiến trúc hợp nhất</h1>
   <p class="sub">Hợp nhất 2 dự án: <b>lõi</b> = <code>cowork-logs-analysis</code> (segmentation → LLM judge → calibration → mine),
-  <b>vỏ</b> = <code>cowork-behavior-harness</code> (privacy gate · business sidecar · convergence). TechStack: TypeScript / Bun / SQLite.</p>
+  <b>vỏ</b> = <code>cowork-behavior-harness</code> (privacy gate · business sidecar · convergence). Mọi lệnh gọi LLM đi qua <code>src/runner.ts</code> (ccs|claude).
+  Sau handoff <code>candidates.json</code> có giai đoạn <b>tùy chọn, có cổng</b> <code>draft</code> sinh skill hoàn chỉnh. TechStack: TypeScript / Bun / SQLite.</p>
 
   <div class="legend">
     <span class="chip core"><span class="dot"></span>Lõi gốc (logs-analysis)</span>
@@ -109,8 +110,8 @@
     <div class="arrow"></div>
 
     <div class="stage core"><div class="t">judge (LLM thật) <span class="tag core">CORE</span></div>
-      <div class="d">Rubric chống Claude-grade-Claude, neo vào user-observable behavior. Cache-key đa thành phần, retry, circuit-breaker, cost-cap.</div>
-      <div class="f">src/judge.ts + prompts/judge.md → claude -p (runner ccs|claude)</div></div>
+      <div class="d">Rubric chống Claude-grade-Claude, neo vào user-observable behavior. Cache-key đa thành phần, retry, circuit-breaker, cost-cap. Model <code>claude-opus-4-8</code>. Tùy chọn <code>--panel</code>: hội đồng 4 judge nối tiếp (outcome + efficiency + quality + consolidator, ~4× chi phí).</div>
+      <div class="f">src/judge.ts + prompts/judge*.md → src/runner.ts → claude -p (runner ccs|claude)</div></div>
     <div class="arrow"></div>
 
     <div class="stage core"><div class="t">SQLite (analysis.db) <span class="tag core">CORE</span></div>
@@ -142,9 +143,14 @@
       <div class="stage shell"><div class="t">converge <span class="tag shell">VỎ · meta gate</span></div>
         <div class="d">Gom candidates nhiều máy → workflow xuất hiện ≥2 máy = <b>cross-validated</b>.</div>
         <div class="f">src/converge.ts → out/convergence.md</div></div>
+      <div class="stage core"><div class="t">draft skill <span class="tag core">POST-HANDOFF · opt-in</span></div>
+        <div class="d">Tùy chọn, có cổng (<code>--yes</code>). Biến candidate GO thành skill hoàn chỉnh: <code>skill/</code> (publish) + <code>audit/</code> (không publish). LLM tự soạn workflow; bằng chứng mined chỉ để ưu tiên + lớp "Observed" trong audit. Có <code>--no-llm</code> tất định.</div>
+        <div class="f">src/skilldraft.ts → out/skill_drafts/&lt;slug&gt;/{skill,audit}/</div></div>
     </div>
 
   </div>
+
+  <div class="note" style="background:#f5f3ff;border-color:#ddd6fe;color:#5b21b6">🧭 <b>Hai bước sau handoff đều CLI-only, KHÔNG nằm trong pipeline mặc định:</b> <code>bun run draft</code> (sinh skill, opt-in) và <code>bun run converge</code> (hội tụ nhiều máy). Lõi miner dừng sạch ở <code>out/candidates.json</code>.</div>
 
   <div class="note">🔒 <b>Privacy là cổng fail-closed:</b> mọi điểm text rời máy tới LLM (render→judge, calibrate-reconstruct→judge) đều đi qua <code>privacy.sanitizeRendered()</code>. Credential bị DROP, PII bị MASK. Audit ghi tại <code>out/state/audit.json</code>.</div>
 
@@ -156,14 +162,17 @@
     <tr><td><code>src/segment.ts</code></td><td>Gom lượt → episode</td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>src/signals.ts</code> · <code>subagents.ts</code></td><td>Evidence signals + nén subagent</td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>src/render.ts</code></td><td>View gọn cho judge <b>+ gọi privacy gate</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
-    <tr><td><code>src/judge.ts</code> + <code>prompts/judge.md</code></td><td>LLM judge bias-anchored + cache-key</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/judge.ts</code> + <code>prompts/judge*.md</code></td><td>LLM judge bias-anchored + cache-key (+ hội đồng <code>--panel</code> 4 judge)</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/runner.ts</code></td><td><b>Lớp định tuyến LLM duy nhất</b> (ccs|claude) + gọi headless <code>claude -p</code></td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>src/calibrate.ts</code></td><td>Cổng tin cậy (stratified + self-consistency)</td><td><span class="pill core">CORE</span></td></tr>
+    <tr><td><code>src/check.ts</code> · <code>dump-render.ts</code></td><td>Kiểm tra bất biến cấu trúc ($0) + xem trước render cho judge</td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>src/mine.ts</code></td><td>Cluster + ranking component</td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>src/report.ts</code></td><td>Report + candidates <b>+ gọi sidecar + machine export</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>src/db.ts</code> · <code>schema.sql</code></td><td>SQLite persistence</td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>src/privacy.ts</code></td><td><b>Privacy gate: credential DROP / PII MASK + opt-out</b></td><td><span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>src/sidecar.ts</code></td><td><b>Business sidecar (join late)</b></td><td><span class="pill shell">VỎ</span></td></tr>
-    <tr><td><code>src/converge.ts</code></td><td><b>Hội tụ cross-machine</b></td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/converge.ts</code></td><td><b>Hội tụ cross-machine</b> (CLI-only)</td><td><span class="pill shell">VỎ</span></td></tr>
+    <tr><td><code>src/skilldraft.ts</code></td><td><b>Sinh skill hoàn chỉnh sau handoff</b> (opt-in, có cổng) → <code>skill/</code> + <code>audit/</code></td><td><span class="pill core">CORE</span></td></tr>
     <tr><td><code>pipeline.ts</code></td><td>Orchestrator <b>+ opt-out filter + audit</b></td><td><span class="pill core">CORE</span> + <span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>src/merge.test.ts</code></td><td><b>Test cho vỏ (privacy/converge)</b></td><td><span class="pill shell">VỎ</span></td></tr>
     <tr><td><code>POLICY.md</code></td><td><b>Chính sách bảo vệ NLĐ &amp; dữ liệu</b></td><td><span class="pill shell">VỎ</span></td></tr>
@@ -174,7 +183,7 @@
     <div class="box core"><h3>Giữ từ lõi logs-analysis</h3><ul>
       <li><b>AB trên log thật</b> — discover đọc transcript thật, judge bằng LLM thật.</li>
       <li><b>Phân biệt tốt/xấu đáng tin</b> — rubric chống thiên vị + calibration trust gate.</li>
-      <li><b>Chỉ gợi ý</b> — dừng ở Go/Kill gate (candidates.json), không tự tạo.</li>
+      <li><b>Chỉ gợi ý</b> — pipeline mặc định dừng ở Go/Kill gate (candidates.json); <code>draft</code> sinh skill là opt-in, có cổng, không tự publish.</li>
       <li><b>Trung thực N nhỏ</b> — no composite score, Laplace smoothing, "insufficient evidence".</li>
     </ul></div>
     <div class="box shell"><h3>Thêm từ vỏ harness</h3><ul>
@@ -194,6 +203,7 @@
       <ul><li><code>report.md</code> · <code>candidates.json</code></li>
       <li><code>state/candidates_&lt;machine&gt;.json</code> → converge</li>
       <li><code>convergence.md</code> · <code>convergence.json</code></li>
+      <li><code>skill_drafts/&lt;slug&gt;/{skill,audit}/</code> (draft)</li>
       <li><code>state/audit.json</code> (privacy audit)</li></ul></div>
   </div>
 
@@ -201,11 +211,13 @@
   <table>
     <tr><th>Lệnh</th><th>Tác dụng</th></tr>
     <tr><td><code>bun run pipeline.ts --mine --business "…"</code></td><td>Full: discover→judge→mine→report (+ sidecar)</td></tr>
+    <tr><td><code>bun run pipeline.ts --panel --max-episodes N</code></td><td>Bật hội đồng 4 judge (efficiency + quality + consolidator)</td></tr>
     <tr><td><code>bun run pipeline.ts --no-judge --limit N</code></td><td>Smoke cấu trúc, $0 (không gọi LLM)</td></tr>
     <tr><td><code>bun run check</code></td><td>Kiểm tra bất biến cấu trúc (PASS/FAIL)</td></tr>
     <tr><td><code>bun run calibrate</code></td><td>Cổng tin cậy: spot-check + self-consistency</td></tr>
+    <tr><td><code>bun run draft --yes</code> · <code>--no-llm</code></td><td>Sau handoff: candidate GO → skill hoàn chỉnh (opt-in)</td></tr>
     <tr><td><code>bun run converge</code></td><td>Hội tụ candidates nhiều máy → cross-validated</td></tr>
-    <tr><td><code>bun test src</code></td><td>Test vỏ hợp nhất (privacy/converge)</td></tr>
+    <tr><td><code>bun test src</code></td><td>Test vỏ hợp nhất (privacy · converge · skill-draft gate)</td></tr>
   </table>
 
   <p class="foot">Cowork Workflow Miner · lõi cowork-logs-analysis + vỏ cowork-behavior-harness · TypeScript/Bun/SQLite · sinh bởi quá trình hợp nhất.</p>
