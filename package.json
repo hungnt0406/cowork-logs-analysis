@@ -16,6 +16,7 @@
     "report": "bun run src/report.ts",
     "draft": "bun run src/skilldraft.ts",
     "converge": "bun run src/converge.ts",
+    "package": "bun run scripts/package.ts",
     "test": "bun test src"
   },
   "devDependencies": {

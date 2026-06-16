@@ -7,6 +7,8 @@ out/
 logs/
 *.log
 .DS_Store
+# Release archives built by `bun run package`
+dist/
 # Working design/plan notes (local only, not the authoritative spec — see implementation-plan.md)
 skilldraft-*-plan.md
 judge-panel-plan.md

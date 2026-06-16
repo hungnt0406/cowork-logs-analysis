@@ -7,6 +7,38 @@ intelligence gate (Cổng Go/Kill 1) — stops **before** drafting skills.
 See `implementation-plan.md` for the full design and `DATA_FORMAT.md` for the
 verified transcript format.
 
+## Install (one command)
+
+Downloads the latest release (or the `main` branch if there's no release yet),
+installs [Bun](https://bun.sh) if missing, and runs `bun install`. Works on macOS,
+Linux, and Windows. Needs only `curl`/`wget` + `tar` (mac/Linux) or PowerShell
+(Windows) — **git is not required.**
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/hungnt0406/cowork-logs-analysis/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/hungnt0406/cowork-logs-analysis/main/install.ps1 | iex
+```
+
+Then launch the interactive wizard:
+
+```bash
+cd cowork-logs-analysis && ./start.sh    # macOS / Linux
+cd cowork-logs-analysis;  .\start.cmd    # Windows
+```
+
+> Prefer to grab a file yourself? Download a `.tar.gz`/`.zip` from the
+> [Releases page](https://github.com/hungnt0406/cowork-logs-analysis/releases),
+> unpack it, and run the launcher above. Or, if you have git:
+> `git clone https://github.com/hungnt0406/cowork-logs-analysis && cd cowork-logs-analysis && ./start.sh`.
+
+The pipeline still needs the `claude` CLI on PATH for live (judged) runs — see
+[Setup](#setup) below. The free `--no-judge` smoke path needs no LLM at all.
+
 ## Pipeline
 
 ```
@@ -302,6 +334,35 @@ discover → classify (vai trò lượt) → segment (episode) → signals + sub
                                           └→ mine (cluster + tốt/xấu) → report.md + candidates.json
 ```
 
+## Tải về nhanh (1 lệnh)
+
+Tải bản release mới nhất (hoặc nhánh `main` nếu chưa có release), tự cài
+[Bun](https://bun.sh) nếu thiếu, rồi chạy `bun install`. Chạy được trên macOS,
+Linux và Windows. Chỉ cần `curl`/`wget` + `tar` (mac/Linux) hoặc PowerShell
+(Windows) — **không cần git.**
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/hungnt0406/cowork-logs-analysis/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/hungnt0406/cowork-logs-analysis/main/install.ps1 | iex
+```
+
+Sau đó mở wizard tương tác:
+
+```bash
+cd cowork-logs-analysis && ./start.sh    # macOS / Linux
+cd cowork-logs-analysis;  .\start.cmd    # Windows
+```
+
+> Muốn tự tải file? Lấy `.tar.gz`/`.zip` ở
+> [trang Releases](https://github.com/hungnt0406/cowork-logs-analysis/releases),
+> giải nén rồi chạy launcher như trên. Hoặc nếu có git:
+> `git clone https://github.com/hungnt0406/cowork-logs-analysis && cd cowork-logs-analysis && ./start.sh`.
+
 ## Cài đặt
 
 ```bash
@@ -569,3 +630,30 @@ bị chấm lại trừ khi nội dung hoặc rubric của nó thay đổi.
 | `src/db.ts` + `src/schema.sql` | lưu trữ SQLite |
 | `src/types.ts` / `src/util.ts` | hợp đồng chung + tiện ích |
 | `pipeline.ts` | trình điều phối (có thể tiếp tục) |
+
+## Đóng gói & phát hành (cho maintainer)
+
+`bun run package` dựng các bản phát hành **sạch** từ cây git đã commit. `git archive`
+chỉ lấy file đã được theo dõi, nên các DB local (`*.db`), `out/`, `logs/`,
+`node_modules/` và `dist/` **tự động bị loại** — không cần lọc tay.
+
+```bash
+bun run package                # version lấy từ package.json, đóng gói HEAD
+bun run package 0.2.0          # đặt nhãn version khác (→ v0.2.0)
+bun run package --ref v0.1.0   # đóng gói một tag/branch/commit cụ thể
+```
+
+Kết quả ghi vào `dist/` (đã gitignore): `cowork-logs-analysis-<version>.tar.gz`
+(mac/Linux) và `.zip` (Windows). Lệnh in sẵn cú pháp `gh release create` để phát hành:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+gh release create v0.2.0 \
+  dist/cowork-logs-analysis-v0.2.0.tar.gz \
+  dist/cowork-logs-analysis-v0.2.0.zip \
+  --title "cowork-logs-analysis v0.2.0" --generate-notes
+```
+
+Khi đã có release, lệnh cài 1 dòng (`install.sh` / `install.ps1`) tự lấy bản mới
+nhất; nếu chưa có release nào, nó quay về tải nhánh `main`. Lưu ý: hai file
+`install.*` phải nằm trên nhánh `main` thì URL `raw.githubusercontent.com` mới chạy.
