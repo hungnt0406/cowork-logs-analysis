@@ -1,7 +1,9 @@
 node_modules/
-analysis.db
-analysis.db-shm
-analysis.db-wal
+# Local SQLite analysis/scan DBs (analysis.db, tennis-scan.db, *-shm/-wal) — never tracked
+*.db
+*.db-shm
+*.db-wal
 out/
+logs/
 *.log
 .DS_Store
