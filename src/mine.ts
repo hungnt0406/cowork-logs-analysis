@@ -198,14 +198,14 @@ function isJudgedForRate(outcome: string | null): boolean {
 }
 
 // ── Risk-flag scanning (DB columns only: first_prompt, tool_sequence, evidence) ─
-const DESTRUCTIVE_PATTERNS: Array<[RegExp, string]> = [
+export const DESTRUCTIVE_PATTERNS: Array<[RegExp, string]> = [
   [/rm\s+-rf|rm\s+-fr|rm\s+-[a-z]*r[a-z]*f/i, "rm -rf"],
   [/push\s+--force|force[- ]push|push\s+-f\b|--force-with-lease/i, "force-push"],
   [/\bdrop\s+(table|database|schema|index|column)\b/i, "DROP (SQL)"],
   [/\bdeploy(ment|ing|ed)?\b|\bgit\s+push\s+.*prod|\bvercel\s+--prod|\bkubectl\s+apply/i, "deploy"],
   [/\btruncate\s+table\b/i, "TRUNCATE (SQL)"],
 ];
-const SECRET_PATTERNS: Array<[RegExp, string]> = [
+export const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b(api[_-]?key|secret[_-]?key|access[_-]?token|private[_-]?key)\b/i, "secrets/credentials"],
   [/\bsk-[a-z0-9]{16,}\b/i, "secret-like token"],
   [/AKIA[0-9A-Z]{12,}/, "AWS access key"],
