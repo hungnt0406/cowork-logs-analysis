@@ -9,6 +9,7 @@
 #
 # Env overrides:  $env:DIR (default cowork-logs-analysis)  $env:BRANCH (default main)
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"  # much faster Invoke-WebRequest on Windows PowerShell 5.1
 
 $repo   = "hungnt0406/cowork-logs-analysis"
 $dir    = if ($env:DIR)    { $env:DIR }    else { "cowork-logs-analysis" }
@@ -47,8 +48,16 @@ $inner = Get-ChildItem -Path $tmp -Directory |
   Where-Object { $_.Name -like "cowork-logs-analysis-*" } | Select-Object -First 1
 if (-not $inner) { throw "unexpected archive layout" }
 Move-Item -Path $inner.FullName -Destination $dir
-Remove-Item -Recurse -Force $tmp
 Write-Host "Extracted to .\$dir"
+
+# Best-effort temp cleanup. `Remove-Item -Recurse` can throw "Access is denied" on
+# Windows (a race deleting the tree, or the zip still briefly locked) — leftover
+# temp files are harmless, so NEVER let cleanup abort an otherwise-finished install.
+try {
+  [System.IO.Directory]::Delete($tmp, $true)
+} catch {
+  Write-Host "Note: could not remove temp dir $tmp (safe to delete later)."
+}
 
 # Install Bun if missing (mirrors start.ps1).
 if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
