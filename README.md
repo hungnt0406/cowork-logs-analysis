@@ -36,8 +36,13 @@ One command drives the whole flow — it installs deps, lists your sessions, let
 specific ones (or all), runs the pipeline, and offers to draft skills:
 
 ```bash
+# macOS / Linux
 ./start.sh          # installs Bun if missing, then launches the wizard
-# or, if Bun is already installed:
+
+# Windows (PowerShell or cmd)
+.\start.cmd         # installs Bun if missing, then launches the wizard
+
+# any OS, if Bun is already installed
 bun run start
 ```
 
@@ -318,8 +323,13 @@ Một lệnh điều khiển toàn bộ quy trình — tự cài dependency, li�
 phiên cụ thể (hoặc tất cả), chạy pipeline, và đề nghị soạn skill:
 
 ```bash
+# macOS / Linux
 ./start.sh          # tự cài Bun nếu thiếu, rồi mở wizard
-# hoặc, nếu đã có Bun:
+
+# Windows (PowerShell hoặc cmd)
+.\start.cmd         # tự cài Bun nếu thiếu, rồi mở wizard
+
+# mọi hệ điều hành, nếu đã có Bun:
 bun run start
 ```
 
