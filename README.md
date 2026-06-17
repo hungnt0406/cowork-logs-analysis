@@ -633,6 +633,20 @@ bị chấm lại trừ khi nội dung hoặc rubric của nó thay đổi.
 
 ## Đóng gói & phát hành (cho maintainer)
 
+### Tự động (khuyến nghị) — chỉ cần push tag
+
+Đã có GitHub Actions (`.github/workflows/release.yml`): **push một tag `v*` là
+GitHub tự đóng gói + tạo Release** đính kèm `.tar.gz` + `.zip`. Không cần build tay.
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0      # → CI build archive (qua `bun run package`) + tạo Release
+```
+
+Workflow tái dùng đúng `bun run package` nên bản CI và bản build local y hệt nhau.
+
+### Thủ công (local) — khi muốn tự kiểm tra trước
+
 `bun run package` dựng các bản phát hành **sạch** từ cây git đã commit. `git archive`
 chỉ lấy file đã được theo dõi, nên các DB local (`*.db`), `out/`, `logs/`,
 `node_modules/` và `dist/` **tự động bị loại** — không cần lọc tay.
